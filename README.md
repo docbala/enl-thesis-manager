@@ -3,6 +3,9 @@
 Android app for the MD thesis "Clinical, Haematological, and Biochemical Profile of Leprosy Patients as Predictors of Erythema Nodosum Leprosum".
 Data lives in Supabase (project "ENL Thesis Manager", Mumbai region). Your Google Sheet and the old Apps Script app are not touched.
 
+## Look
+Same design as the old Apps Script app: header card, four number tiles, coloured progress bars (enrolment, follow-up adherence, 1,200-visit target), blue Saturday follow-up list, amber awaiting SSS/biopsy list with Confirm Report, pink pending lab reports, round call / SMS / WhatsApp buttons, Export Master Dataset. On a computer the app sits in a centred phone-width column.
+
 ## What Phase 1 does
 - Sign in with email and password. Only invited emails see data (enforced in the database).
 - Dashboard: enrolment out of 100, adherence, visits due in the next 7 days, patients with 2+ missed visits, patients without a baseline, records to check.
@@ -23,6 +26,12 @@ npm install
 npx expo start
 ```
 Scan the QR code with Expo Go.
+
+## Run it as a web app (same screens in the browser)
+```
+npx expo start --web
+```
+To put it on the internet later: `npx expo export --platform web` makes a `dist` folder you can host on any static host (Netlify, Vercel, Firebase Hosting). Ask Claude to set this up.
 
 ## Install as a real app (APK)
 ```

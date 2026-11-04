@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, ScrollView, Switch, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView, Switch, Text, View } from 'react-native';
+import { ask, notify } from '../lib/dialog';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import type { Patient } from '../lib/types';
 import { addMonths, isISODate, todayISO } from '../lib/dates';
 import { toNum } from '../lib/labs';
-import { Btn, C, Card, Choice, Field, H, Muted } from './ui';
+import { Btn, C, Card, Choice, Field, H, Muted, page } from './ui';
 
 const SEX = ['Male', 'Female', 'Other'] as const;
 const SPECTRUM = ['LL', 'BL', 'BB', 'BT', 'TT'] as const;
@@ -50,7 +51,7 @@ export function PatientForm({ existing }: { existing?: Patient }) {
     if (!isISODate(f.enrollment_date)) problems.push('Enrolment date must be YYYY-MM-DD.');
     if (!isISODate(f.mdt_start_date)) problems.push('MDT start date must be YYYY-MM-DD.');
     if (isISODate(f.mdt_start_date) && isISODate(f.enrollment_date) && f.mdt_start_date > f.enrollment_date) problems.push('MDT start cannot be after enrolment.');
-    if (problems.length) { Alert.alert('Please fix', problems.join('\n')); return; }
+    if (problems.length) { notify('Please fix', problems.join('\n')); return; }
 
     const row: Record<string, unknown> = {
       patient_name: f.patient_name.trim(), age: toNum(f.age), sex: f.sex || null,
@@ -65,24 +66,24 @@ export function PatientForm({ existing }: { existing?: Patient }) {
     if (existing) {
       const { error } = await supabase.from('patients').update(row).eq('id', existing.id);
       setBusy(false);
-      if (error) { Alert.alert('Could not save', error.message); return; }
+      if (error) { notify('Could not save', error.message); return; }
       router.back();
     } else {
       const prefix = f.diagnostic_status === 'Confirmed' ? 'HD' : 'SUS';
       const { data: cr, error: idErr } = await supabase.rpc('next_study_id', { p_prefix: prefix });
-      if (idErr) { setBusy(false); Alert.alert('Could not get a study number', idErr.message); return; }
+      if (idErr) { setBusy(false); notify('Could not get a study number', idErr.message); return; }
       const { data, error } = await supabase.from('patients')
         .insert({ ...row, cr_no: cr, patient_status: prefix === 'HD' ? 'Active' : 'Awaiting Report' }).select('id').single();
       setBusy(false);
-      if (error) { Alert.alert('Could not save', error.message); return; }
-      Alert.alert('Enrolled', `Study number ${cr}`);
+      if (error) { notify('Could not save', error.message); return; }
+      notify('Enrolled', `Study number ${cr}`);
       router.replace(`/patient/${data.id}`);
     }
   }
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }} keyboardShouldPersistTaps="handled">
+      <ScrollView style={{ backgroundColor: C.bg }} contentContainerStyle={page} keyboardShouldPersistTaps="handled">
         <Card>
           <H>Patient</H>
           <Field label="Name" value={f.patient_name} onChangeText={set('patient_name')} />

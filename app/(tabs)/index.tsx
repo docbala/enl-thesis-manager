@@ -1,125 +1,210 @@
-import { useCallback, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { useCallback, useMemo, useState } from 'react';
+import { Pressable, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
-import type { Progress } from '../../lib/types';
-import { Btn, C, Card, Chip, H, Muted, s } from '../../components/ui';
+import type { Patient, Progress, Slot } from '../../lib/types';
+import { ask, notify } from '../../lib/dialog';
+import { comingSaturday, reminderText } from '../../lib/messages';
+import { exportMasterDataset } from '../../lib/export';
+import { fmt, todayISO } from '../../lib/dates';
+import {
+  Btn, C, Card, Chip, ContactButtons, HeaderCard, Muted, PersonRow, ProgressCard, Screen, Section, StatTile, TONES,
+} from '../../components/ui';
 
-const TARGET = 100;
+const TARGET_PATIENTS = 100;
+const TARGET_VISITS = 1200;   // 100 patients × 12 follow-up months
+
+type LastVisit = { patient_id: string; visit_type: string; visit_date: string };
 
 export default function Dashboard() {
   const { role, session } = useSession();
-  const [rows, setRows] = useState<Progress[]>([]);
-  const [statuses, setStatuses] = useState<Record<string, string>>({});
-  const [flagged, setFlagged] = useState(0);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [progress, setProgress] = useState<Progress[]>([]);
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [last, setLast] = useState<Map<string, LastVisit>>(new Map());
+  const [toReview, setToReview] = useState(0);
   const [pendingSync, setPendingSync] = useState<number | null>(null);
+  const [canExport, setCanExport] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [prog, pts, rv, sq] = await Promise.all([
+    const [pt, pg, sl, vs, rv, sq, me] = await Promise.all([
+      supabase.from('patients').select('*').is('deleted_at', null),
       supabase.from('v_patient_progress').select('*'),
-      supabase.from('patients').select('id, patient_status').is('deleted_at', null),
+      supabase.from('v_schedule').select('*'),
+      supabase.from('visits').select('patient_id, visit_type, visit_date').is('deleted_at', null).order('visit_date', { ascending: false }),
       supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }),
       supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null),
+      supabase.from('members').select('can_export').eq('user_id', session?.user.id ?? '').maybeSingle(),
     ]);
-    setRows((prog.data ?? []) as Progress[]);
-    setStatuses(Object.fromEntries((pts.data ?? []).map((p: any) => [p.id, p.patient_status ?? ''])));
-    setFlagged(rv.count ?? 0);
+    setPatients((pt.data ?? []) as Patient[]);
+    setProgress((pg.data ?? []) as Progress[]);
+    setSlots((sl.data ?? []) as Slot[]);
+    const m = new Map<string, LastVisit>();
+    for (const v of (vs.data ?? []) as LastVisit[]) if (!m.has(v.patient_id)) m.set(v.patient_id, v);
+    setLast(m);
+    setToReview(rv.count ?? 0);
     setPendingSync(sq.error ? null : sq.count ?? 0);
+    setCanExport(!!me.data?.can_export);
     setLoading(false);
-  }, []);
+  }, [session?.user.id]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  const view = useMemo(() => {
+    const today = todayISO();
+    const sat = comingSaturday();
+    const byId = new Map(patients.map(p => [p.id, p]));
+    const active = patients.filter(p => (p.patient_status ?? 'Active') === 'Active');
+    // Saturday list: a follow-up month whose window is open on the coming Saturday and has no visit yet
+    const saturday = slots
+      .filter(x => !x.is_baseline && !x.visit_uuid && x.opens_on <= sat && sat < x.closes_on && byId.get(x.patient_id)?.patient_status === 'Active')
+      .sort((a, b) => a.cr_no.localeCompare(b.cr_no));
+    const awaiting = patients.filter(p => p.cr_no.startsWith('SUS-') || (p.diagnostic_status ?? '').startsWith('Awaiting'))
+      .sort((a, b) => a.cr_no.localeCompare(b.cr_no));
+    // Pending reports: months already due with no visit (and missing baselines)
+    const pending = new Map<string, string[]>();
+    for (const x of slots) {
+      if (x.visit_uuid || byId.get(x.patient_id)?.patient_status !== 'Active') continue;
+      if (x.is_baseline || x.due_date < today) {
+        const label = x.is_baseline ? 'Baseline' : `Month ${x.slot_month}`;
+        pending.set(x.patient_id, [...(pending.get(x.patient_id) ?? []), label]);
+      }
+    }
+    const pendingRows = [...pending.entries()].map(([id, months]) => ({ p: byId.get(id)!, months }))
+      .filter(r => r.p).sort((a, b) => a.p.cr_no.localeCompare(b.p.cr_no));
+    const confirmed = patients.filter(p => p.cr_no.startsWith('HD-')).length;
+    const done = progress.reduce((a, r) => a + r.followups_completed, 0);
+    const due = progress.reduce((a, r) => a + r.followups_completed + r.followups_missed, 0);
+    const visitsDone = slots.filter(x => x.status === 'completed').length;
+    return {
+      sat, saturday, awaiting, pendingRows, confirmed, done, due, visitsDone, activeCount: active.length,
+      enl: patients.filter(p => p.enl_developed).length, byId,
+    };
+  }, [patients, progress, slots]);
+
   if (!role) {
     return (
-      <ScrollView contentContainerStyle={{ padding: 16 }}>
+      <Screen>
+        <HeaderCard />
         <Card>
-          <H>Waiting for access</H>
+          <Text style={{ fontSize: 18, fontWeight: '800', color: C.primary }}>Waiting for access</Text>
           <Muted>You are signed in as {session?.user.email}, but this email has not been invited yet. Ask the study owner to add you.</Muted>
           <Btn kind="ghost" title="Sign out" onPress={() => supabase.auth.signOut()} />
         </Card>
-      </ScrollView>
+      </Screen>
     );
   }
 
-  const confirmed = rows.filter(r => r.cr_no.startsWith('HD-')).length;
-  const suspected = rows.filter(r => r.cr_no.startsWith('SUS-')).length;
-  const done = rows.reduce((a, r) => a + (r.followups_completed ?? 0), 0);
-  const missed = rows.reduce((a, r) => a + (r.followups_missed ?? 0), 0);
-  const today = new Date().toISOString().slice(0, 10);
-  const in7 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
-  const dueThisWeek = rows.filter(r => r.next_due_date && r.next_due_date >= today && r.next_due_date <= in7)
-    .sort((a, b) => (a.next_due_date! < b.next_due_date! ? -1 : 1));
-  const noBaseline = rows.filter(r => !r.has_baseline && statuses[r.patient_id] === 'Active');
-  const atRisk = rows.filter(r => r.consecutive_missed >= 2).sort((a, b) => b.consecutive_missed - a.consecutive_missed);
+  async function confirmCase(p: Patient) {
+    if (!(await ask('Confirm report?', `${p.patient_name} (${p.cr_no}) will be marked Confirmed and get the next HD number.`, 'Confirm'))) return;
+    const { data, error } = await supabase.rpc('confirm_suspected', { p_patient: p.id });
+    if (error) notify('Could not confirm', error.message); else { notify('Confirmed', `New study number: ${data}`); load(); }
+  }
+
+  async function doExport() {
+    const identified = await ask('Export master dataset',
+      'Include names, UHID, phone and address?\n\nOK = identified (keep private)\nCancel = de-identified (HD numbers only)', 'Identified');
+    setExporting(true);
+    try { const name = await exportMasterDataset(identified); notify('Exported', name); }
+    catch (e: any) { notify('Export failed', e.message); }
+    setExporting(false);
+  }
+
+  const lastLine = (id: string) => {
+    const v = last.get(id);
+    return v ? `Last visit: ${v.visit_type} (${fmt(v.visit_date)})` : 'No visit yet';
+  };
+  const naive = (p?: Patient) => (p?.mdt_status ?? '').includes('Naive') ? 'Newly Diagnosed (Naive)' : null;
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16 }} refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}>
+    <Screen refreshing={loading} onRefresh={load}>
+      <HeaderCard />
+
       <Card>
-        <View style={s.row}>
-          <View>
-            <Text style={{ fontSize: 30, fontWeight: '700', color: C.primary }}>{confirmed}<Text style={{ fontSize: 16, color: C.quiet }}> / {TARGET}</Text></Text>
-            <Muted>confirmed patients enrolled{suspected ? ` · ${suspected} suspected` : ''}</Muted>
-          </View>
-          <View style={{ alignItems: 'flex-end' }}>
-            <Text style={{ fontSize: 20, fontWeight: '700', color: C.ink }}>{done + missed ? Math.round(100 * done / (done + missed)) : 0}%</Text>
-            <Muted>follow-up adherence</Muted>
-          </View>
+        <Text style={{ fontSize: 20, fontWeight: '800', color: C.primary, marginBottom: 14 }}>Thesis Progress Dashboard</Text>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+          <StatTile value={view.confirmed} label="Total Enrolled Patients" />
+          <StatTile value={view.awaiting.length} label="SSS / Biopsy Awaited" tone="amber" />
         </View>
-        <View style={{ height: 8, backgroundColor: C.line, borderRadius: 4, marginTop: 12 }}>
-          <View style={{ width: `${Math.min(100, confirmed)}%`, height: 8, backgroundColor: C.primary, borderRadius: 4 }} />
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
+          <StatTile value={view.enl} label="ENL Cases" />
+          <StatTile value={view.saturday.length} label="Due This Saturday" />
         </View>
-        <Muted>{done} follow-ups done · {missed} missed</Muted>
+
+        <View style={{ marginTop: 18, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 }}>
+            <View style={{ width: 52, height: 52, borderRadius: 12, backgroundColor: C.infoBg, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ fontSize: 26 }}>📊</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 18, fontWeight: '800', color: C.ink }}>Thesis Progress Overview</Text>
+              <Muted>Target tracking and follow-up metrics</Muted>
+            </View>
+          </View>
+          <ProgressCard title="Patient Enrollment" color={C.good} pct={100 * view.confirmed / TARGET_PATIENTS}
+            caption={`${view.confirmed} / ${TARGET_PATIENTS} patients enrolled`} />
+          <ProgressCard title="Follow-up Adherence" color={C.teal} pct={view.due ? 100 * view.done / view.due : 0}
+            caption={`${view.done} of ${view.due} follow-ups due so far were done`} />
+          <ProgressCard title="Overall Target" color={C.amber} pct={100 * view.visitsDone / TARGET_VISITS}
+            caption={`${view.visitsDone} visits against ${TARGET_VISITS} total visits benchmark`} />
+        </View>
       </Card>
 
-      {canEdit(role) ? <Btn title="+ Enrol new patient" onPress={() => router.push('/patient/new')} /> : null}
+      {canEdit(role) ? <Btn title="Enrol new patient" icon="＋" onPress={() => router.push('/patient/new')} /> : null}
 
-      {flagged ? (
+      {toReview ? (
         <Pressable onPress={() => router.push('/review')}>
-          <Card style={{ backgroundColor: C.warnBg, borderColor: C.warn }}>
-            <Text style={{ color: C.warn, fontWeight: '700' }}>{flagged} imported records need checking</Text>
+          <View style={{ backgroundColor: TONES.amber.bg, borderColor: TONES.amber.border, borderWidth: 1, borderRadius: 14, padding: 14, marginVertical: 10 }}>
+            <Text style={{ color: C.warn, fontWeight: '800', fontSize: 16 }}>⚑  {toReview} imported records need checking</Text>
             <Muted>Tap to open the review list</Muted>
-          </Card>
+          </View>
         </Pressable>
       ) : null}
 
-      <Card>
-        <H>Due in the next 7 days ({dueThisWeek.length})</H>
-        {dueThisWeek.length === 0 ? <Muted>Nothing due.</Muted> : dueThisWeek.map(r => (
-          <Pressable key={r.patient_id} onPress={() => router.push(`/patient/${r.patient_id}`)} style={[s.row, { paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.line }]}>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontWeight: '600', color: C.ink }}>{r.cr_no} · {r.patient_name}</Text>
-              <Muted>Month {r.next_slot} due {r.next_due_date}</Muted>
-            </View>
-            <Chip text={`M${r.next_slot}`} />
-          </Pressable>
-        ))}
-      </Card>
+      <View style={{ height: 6 }} />
 
-      <Card>
-        <H>Missed 2 or more visits in a row ({atRisk.length})</H>
-        {atRisk.length === 0 ? <Muted>None.</Muted> : atRisk.map(r => (
-          <Pressable key={r.patient_id} onPress={() => router.push(`/patient/${r.patient_id}`)} style={[s.row, { paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.line }]}>
-            <Text style={{ flex: 1, color: C.ink }}>{r.cr_no} · {r.patient_name}</Text>
-            <Chip text={`${r.consecutive_missed} missed`} tone={r.ltfu_flag ? 'bad' : 'warn'} />
-          </Pressable>
-        ))}
-      </Card>
+      <Section title={`Saturday Follow-up Cases (${fmt(view.sat)})`} icon="📅" tone="blue" items={view.saturday}
+        keyOf={x => x.patient_id + x.slot_month} empty="No follow-up month is open this Saturday."
+        render={x => {
+          const p = view.byId.get(x.patient_id);
+          return (
+            <PersonRow name={p?.patient_name ?? ''} id={x.cr_no} badge={naive(p)}
+              sub={`Month ${x.slot_month} due ${fmt(x.due_date)} · ${lastLine(x.patient_id)}`}
+              onPress={() => router.push(`/patient/${x.patient_id}`)}
+              right={<ContactButtons phone={p?.contact_no ?? null} message={reminderText(p?.patient_name ?? '', view.sat)} />} />
+          );
+        }} />
 
-      <Card>
-        <H>No baseline visit yet ({noBaseline.length})</H>
-        {noBaseline.length === 0 ? <Muted>All active patients have a baseline.</Muted> : noBaseline.map(r => (
-          <Pressable key={r.patient_id} onPress={() => router.push(`/patient/${r.patient_id}`)} style={{ paddingVertical: 8, borderTopWidth: 1, borderTopColor: C.line }}>
-            <Text style={{ color: C.ink }}>{r.cr_no} · {r.patient_name}</Text>
-          </Pressable>
-        ))}
-      </Card>
+      <Section title="Patients Awaiting SSS/Biopsy" icon="⏳" tone="amber" items={view.awaiting} keyOf={p => p.id}
+        empty="No reports awaited."
+        render={p => (
+          <PersonRow name={p.patient_name} id={p.cr_no} badge={p.diagnostic_status} badgeTone="warn"
+            sub={`Enrolled: ${fmt(p.enrollment_date)}`} onPress={() => router.push(`/patient/${p.id}`)}
+            right={canEdit(role) && p.cr_no.startsWith('SUS-')
+              ? <Pressable onPress={() => confirmCase(p)} style={{ backgroundColor: '#28A745', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10 }}>
+                  <Text style={{ color: '#fff', fontWeight: '800', textAlign: 'center' }}>Confirm{'\n'}Report</Text>
+                </Pressable>
+              : null} />
+        )} />
 
-      {pendingSync !== null ? <Muted>Google Sheet copy: {pendingSync} change{pendingSync === 1 ? '' : 's'} waiting</Muted> : null}
-      <Btn kind="ghost" title="Sign out" onPress={() => supabase.auth.signOut()} />
-    </ScrollView>
+      <Section title="Pending Lab Investigation Reports" icon="🔬" tone="pink" items={view.pendingRows} keyOf={r => r.p.id}
+        empty="No overdue visits or reports."
+        render={r => (
+          <PersonRow name={r.p.patient_name} id={r.p.cr_no} sub={`Missing: ${r.months.join(', ')}`} subColor={TONES.pink.title}
+            onPress={() => router.push(`/patient/${r.p.id}`)}
+            right={<ContactButtons phone={r.p.contact_no} sms={false} message={reminderText(r.p.patient_name, view.sat)} />} />
+        )} />
+
+      {canExport ? <Btn kind="export" icon="📥" title="Export Master Dataset" busy={exporting} onPress={doExport} /> : null}
+
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+        {pendingSync !== null ? <Chip text={`Sheet copy: ${pendingSync} waiting`} tone={pendingSync ? 'warn' : 'good'} /> : <View />}
+        <Pressable onPress={() => supabase.auth.signOut()}><Text style={{ color: C.primary, fontWeight: '700', padding: 8 }}>Sign out</Text></Pressable>
+      </View>
+    </Screen>
   );
 }

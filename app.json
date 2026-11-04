@@ -25,6 +25,11 @@
     "extra": {
       "supabaseUrl": "https://pmqzhjzpututodtzovut.supabase.co",
       "supabaseKey": "sb_publishable_WNYWciJUVPMb8aK9lXPQfQ_bUJJBcoX"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/favicon.png"
     }
   }
 }

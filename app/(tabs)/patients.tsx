@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useState } from 'react';
-import { FlatList, Pressable, RefreshControl, Text, TextInput, View } from 'react-native';
+import { FlatList, RefreshControl, Text, TextInput, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase } from '../../lib/supabase';
 import type { Progress } from '../../lib/types';
-import { C, Chip, Muted, s } from '../../components/ui';
+import { reminderText } from '../../lib/messages';
+import { fmt } from '../../lib/dates';
+import { C, Chip, ContactButtons, Muted, page, PersonRow, s } from '../../components/ui';
 
-type Row = Progress & { uhid: string | null; contact_no: string | null; patient_status: string | null };
+type Row = Progress & { uhid: string | null; contact_no: string | null; patient_status: string | null; enl_developed: boolean | null };
 
 export default function Patients() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -16,7 +19,7 @@ export default function Patients() {
     setLoading(true);
     const [prog, pts] = await Promise.all([
       supabase.from('v_patient_progress').select('*'),
-      supabase.from('patients').select('id, uhid, contact_no, patient_status').is('deleted_at', null),
+      supabase.from('patients').select('id, uhid, contact_no, patient_status, enl_developed').is('deleted_at', null),
     ]);
     const extra = new Map((pts.data ?? []).map((p: any) => [p.id, p]));
     const merged = ((prog.data ?? []) as Progress[]).map(r => ({ ...r, ...(extra.get(r.patient_id) ?? {}) })) as Row[];
@@ -40,30 +43,36 @@ export default function Patients() {
   }, [q, rows]);
 
   return (
-    <View style={{ flex: 1 }}>
-      <TextInput value={q} onChangeText={setQ} placeholder="Search HD number, name, UHID or phone"
-        placeholderTextColor="#98A2AE" style={[s.input, { margin: 12 }]} />
+    <View style={{ flex: 1, backgroundColor: C.bg }}>
       <FlatList data={shown} keyExtractor={r => r.patient_id}
         refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
-        contentContainerStyle={{ paddingHorizontal: 12, paddingBottom: 24 }}
+        contentContainerStyle={page}
+        ListHeaderComponent={
+          <View style={{ marginBottom: 12 }}>
+            <View style={[s.input, { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 }]}>
+              <MaterialCommunityIcons name="magnify" size={22} color={C.quiet} />
+              <TextInput value={q} onChangeText={setQ} placeholder="Search HD number, name, UHID or phone"
+                placeholderTextColor="#98A2AE" style={{ flex: 1, fontSize: 16, paddingVertical: 8, color: C.ink }} />
+            </View>
+            <Muted>{shown.length} of {rows.length} patients</Muted>
+          </View>
+        }
         ListEmptyComponent={<Muted>No patients match.</Muted>}
         renderItem={({ item: r }) => (
-          <Pressable onPress={() => router.push(`/patient/${r.patient_id}`)}
-            style={{ backgroundColor: C.card, borderRadius: 10, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: C.line }}>
-            <View style={s.row}>
-              <Text style={{ fontWeight: '700', color: C.ink }}>{r.cr_no}</Text>
-              <View style={{ flexDirection: 'row', gap: 6 }}>
-                {r.leprosy_spectrum ? <Chip text={r.leprosy_spectrum} /> : null}
-                {r.consecutive_missed >= 2 ? <Chip text={`${r.consecutive_missed} missed`} tone={r.ltfu_flag ? 'bad' : 'warn'} /> : null}
+          <PersonRow name={r.patient_name} id={r.cr_no}
+            badge={r.mdt_status?.includes('Naive') ? 'Newly Diagnosed (Naive)' : null}
+            sub={`${r.leprosy_spectrum ?? '-'} · ${r.followups_completed}/${r.followups_planned} follow-ups${r.next_due_date ? ` · next M${r.next_slot} ${fmt(r.next_due_date)}` : ''}`}
+            onPress={() => router.push(`/patient/${r.patient_id}`)}
+            right={
+              <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                <ContactButtons phone={r.contact_no} sms={false} message={reminderText(r.patient_name, r.next_due_date)} />
+                <View style={{ flexDirection: 'row', gap: 4 }}>
+                  {r.enl_developed ? <Chip text="ENL" tone="bad" /> : null}
+                  {r.consecutive_missed >= 2 ? <Chip text={`${r.consecutive_missed} missed`} tone={r.ltfu_flag ? 'bad' : 'warn'} /> : null}
+                  {r.patient_status && r.patient_status !== 'Active' ? <Chip text={r.patient_status} tone="warn" /> : null}
+                </View>
               </View>
-            </View>
-            <Text style={{ color: C.ink, marginTop: 2 }}>{r.patient_name}</Text>
-            <Muted>
-              {r.followups_completed}/{r.followups_planned} follow-ups
-              {r.next_due_date ? ` · next M${r.next_slot} on ${r.next_due_date}` : ''}
-              {r.patient_status && r.patient_status !== 'Active' ? ` · ${r.patient_status}` : ''}
-            </Muted>
-          </Pressable>
+            } />
         )} />
     </View>
   );

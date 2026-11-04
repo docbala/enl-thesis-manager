@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, View } from 'react-native';
+import { ask, notify } from '../../lib/dialog';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import type { Patient, Slot, Visit } from '../../lib/types';
 import { ALL_LAB_FIELDS, hba1cDue, LAB_GROUPS, LabKey, outOfRange, ratios, toNum } from '../../lib/labs';
 import { fmt, isISODate, todayISO } from '../../lib/dates';
-import { Btn, C, Card, Choice, Field, H, Muted, s } from '../../components/ui';
+import { Btn, C, Card, Choice, Field, H, Muted, s, page } from '../../components/ui';
 
 type Lab = Record<LabKey, string>;
 const emptyLabs = () => Object.fromEntries(ALL_LAB_FIELDS.map(f => [f.key, ''])) as Lab;
@@ -86,7 +87,7 @@ export default function VisitScreen() {
       const raw = labs[f.key].trim();
       if (raw && toNum(raw.replace(/^[<>]/, '')) == null) problems.push(`${f.label}: "${raw}" is not a number.`);
     }
-    if (problems.length) { Alert.alert('Please fix', problems.join('\n')); return; }
+    if (problems.length) { notify('Please fix', problems.join('\n')); return; }
 
     const warn = ALL_LAB_FIELDS.filter(f => outOfRange(f, nums[f.key] ?? null)).map(f => `${f.label} ${nums[f.key]}`);
     const doSave = async () => {
@@ -104,23 +105,19 @@ export default function VisitScreen() {
         : await supabase.from('visits').insert(row);
       if (!res.error && enl && !p.enl_developed) await supabase.from('patients').update({ enl_developed: true }).eq('id', p.id);
       setBusy(false);
-      if (res.error) { Alert.alert('Could not save', res.error.message); return; }
+      if (res.error) { notify('Could not save', res.error.message); return; }
       router.back();
     };
     if (warn.length) {
-      Alert.alert('Unusual values', `${warn.join(', ')}\n\nSave anyway?`, [{ text: 'Go back', style: 'cancel' }, { text: 'Save', onPress: doSave }]);
+      if (await ask('Unusual values', `${warn.join(', ')}\n\nSave anyway?`, 'Save')) doSave();
     } else doSave();
   }
 
   async function remove() {
     if (!visit) return;
-    Alert.alert('Delete visit?', `${visit.visit_id} on ${fmt(visit.visit_date)} will be removed from the app (kept in the history).`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        const { error } = await supabase.from('visits').update({ deleted_at: new Date().toISOString() }).eq('id', visit.id);
-        if (error) Alert.alert('Could not delete', error.message); else router.back();
-      } },
-    ]);
+    if (!(await ask('Delete visit?', `${visit.visit_id} on ${fmt(visit.visit_date)} will be removed from the app (kept in the history).`, 'Delete', true))) return;
+    const { error } = await supabase.from('visits').update({ deleted_at: new Date().toISOString() }).eq('id', visit.id);
+    if (error) notify('Could not delete', error.message); else router.back();
   }
 
   if (!p) return <View style={{ padding: 16 }}><Muted>Loading…</Muted></View>;
@@ -129,7 +126,7 @@ export default function VisitScreen() {
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ title: visit ? visit.visit_id : `New visit · ${p.cr_no}` }} />
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }} keyboardShouldPersistTaps="handled">
+      <ScrollView style={{ backgroundColor: C.bg }} contentContainerStyle={page} keyboardShouldPersistTaps="handled">
         {flags.length && !visit?.reviewed_at ? (
           <Card style={{ backgroundColor: C.warnBg, borderColor: C.warn }}>
             <H>Check against the report</H>
