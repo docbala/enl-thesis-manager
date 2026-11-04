@@ -29,7 +29,14 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "name": "ENL Thesis Manager",
+      "shortName": "ENL Thesis",
+      "themeColor": "#1F4E78",
+      "backgroundColor": "#F4F6F9"
+    },
+    "experiments": {
+      "baseUrl": "/enl-thesis-manager"
     }
   }
 }
