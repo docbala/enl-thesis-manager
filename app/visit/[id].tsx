@@ -10,6 +10,11 @@ import { fmt, isISODate, todayISO } from '../../lib/dates';
 import { Btn, C, Card, Choice, Field, H, Muted, s, page } from '../../components/ui';
 import { EssForm } from '../../components/EssForm';
 import { ESS_ITEMS, EssScores, essScored, essTotal } from '../../lib/ess';
+import { BODY_SITES, Photo, Picked, savePhoto, scanDocument } from '../../lib/photos';
+import { CaptureButtons, PendingList, Thumb, useSignedUrls } from '../../components/Photos';
+
+type Pending = { file: Picked; label: string; kind: 'lesion' | 'lab_report'; site?: string };
+const norm = (x: unknown) => String(x ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 type Lab = Record<LabKey, string>;
 const emptyLabs = () => Object.fromEntries(ALL_LAB_FIELDS.map(f => [f.key, ''])) as Lab;
@@ -39,6 +44,12 @@ export default function VisitScreen() {
   const [weight, setWeight] = useState('');
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [saved, setSaved] = useState<Photo[]>([]);
+  const [site, setSite] = useState<string>('Face');
+  const [scanning, setScanning] = useState(false);
+  const [scanned, setScanned] = useState<string[]>([]);
+  const [scanInfo, setScanInfo] = useState<{ name?: string; uhid?: string; date?: string; notes: string[] } | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -54,6 +65,8 @@ export default function VisitScreen() {
         const { data: a } = await supabase.from('ess_assessments').select('*').eq('visit_id', v.id).maybeSingle();
         if (a) setEss(Object.fromEntries(ESS_ITEMS.map(i => [i.key, (a as any)[i.key]])) as EssScores);
         else if (v.ess_score != null) setOldEss(Number(v.ess_score));
+        const ph = await supabase.from('photos').select('*').eq('visit_id', v.id).is('deleted_at', null).order('taken_at');
+        setSaved((ph.data ?? []) as Photo[]);
         setWeight(str(v.weight_kg)); setNotes(v.clinical_notes && v.clinical_notes !== 'Verified & Saved' ? v.clinical_notes : '');
       }
       if (!pid) return;
@@ -66,6 +79,36 @@ export default function VisitScreen() {
       if (isNew && (vs.data ?? []).length === 0) setKind('Baseline');
     })();
   }, [id, patient]);
+
+  const savedUrls = useSignedUrls(saved.filter(x => x.mime_type !== 'application/pdf').map(x => x.storage_path));
+
+  // Gemini reads the report; values fill empty boxes only, highlighted until checked. The report is attached to the visit.
+  async function scanReport(file: Picked) {
+    setPending(prev => [...prev, { file, label: 'Lab report', kind: 'lab_report' }]);
+    setScanning(true);
+    try {
+      const res = await scanDocument('lab_report', file);
+      const r = res.fields;
+      const filled: string[] = [];
+      setLabs(prev => {
+        const next = { ...prev };
+        for (const f of ALL_LAB_FIELDS) {
+          let v = r[f.key];
+          if (v === null || v === undefined || v === '') continue;
+          if (f.key === 'vit_b12' && r.vit_b12_flag) v = r.vit_b12_flag + String(v);
+          if (prev[f.key].trim()) continue;            // never overwrite what was typed
+          next[f.key] = String(v); filled.push(f.key);
+        }
+        return next;
+      });
+      setScanned(filled);
+      setScanInfo({ name: r.name_on_report ?? undefined, uhid: r.uhid_on_report ?? undefined, date: r.report_date ?? undefined, notes: res.notes ?? [] });
+      if (isNew && r.report_date && isISODate(r.report_date) && r.report_date <= todayISO()) setDate(r.report_date);
+    } catch (e: any) { notify('Scan failed', e.message + '\n\nThe report is still attached; type the values.'); }
+    setScanning(false);
+  }
+  const nameMismatch = scanInfo?.name && p && !norm(scanInfo.name).includes(norm(p.patient_name).slice(0, 4));
+  const uhidMismatch = scanInfo?.uhid && p?.uhid && !norm(scanInfo.uhid).includes(norm(p.uhid)) && !norm(p.uhid).includes(norm(scanInfo.uhid));
 
   const enrollMonth = slots.find(x => x.is_baseline)?.slot_month ?? 0;
   const slot = useMemo(() => (isISODate(date) ? slotFor(date, slots) : null), [date, slots]);
@@ -117,7 +160,13 @@ export default function VisitScreen() {
       } else if (!enl && visit) {
         await supabase.from('ess_assessments').delete().eq('visit_id', visit.id);
       }
+      const failed: string[] = [];
+      for (const it of pending) {
+        try { await savePhoto({ patientId: p.id, visitId: res.data.id, kind: it.kind, bodySite: it.site ?? null, file: it.file }); }
+        catch (e: any) { failed.push(`${it.label}: ${e.message}`); }
+      }
       setBusy(false);
+      if (failed.length) notify('Visit saved, but some files did not upload', failed.join('\n'));
       router.back();
     };
     if (warn.length) {
@@ -158,6 +207,28 @@ export default function VisitScreen() {
           </Text>
         </Card>
 
+        {editable ? (
+          <Card style={{ backgroundColor: '#EAF4FB', borderColor: '#BFE0F4' }}>
+            <H>Scan lab report</H>
+            <Muted>Gemini fills the empty lab boxes. Highlighted values must be checked against the report.</Muted>
+            <CaptureButtons kind="lab_report" allowFile onPicked={scanReport} disabled={scanning} />
+            {scanning ? <Muted>Reading the report…</Muted> : null}
+            {scanInfo ? (
+              <View style={{ marginTop: 6 }}>
+                <Text style={{ color: nameMismatch ? C.bad : C.ink, fontWeight: nameMismatch ? '800' : '400' }}>
+                  Name on report: {scanInfo.name ?? 'not read'}{nameMismatch ? `  ≠ ${p.patient_name}?` : ''}
+                </Text>
+                <Text style={{ color: uhidMismatch ? C.bad : C.ink, fontWeight: uhidMismatch ? '800' : '400' }}>
+                  UHID on report: {scanInfo.uhid ?? 'not read'}{uhidMismatch ? `  ≠ ${p.uhid}?` : ''}
+                </Text>
+                {scanInfo.date ? <Muted>Report date {fmt(scanInfo.date)}</Muted> : null}
+                <Text style={{ color: C.good, fontWeight: '600' }}>{scanned.length} values filled</Text>
+                {scanInfo.notes.map((n, i) => <Muted key={i}>{n}</Muted>)}
+              </View>
+            ) : null}
+          </Card>
+        ) : null}
+
         <Card>
           <H>Clinical</H>
           <View style={s.row}>
@@ -181,13 +252,34 @@ export default function VisitScreen() {
               <Field key={f.key} label={f.label + (f.key === 'hba1c' && due ? '  (due this visit)' : '')} unit={f.unit}
                 keyboardType={f.key === 'vit_b12' ? 'default' : 'decimal-pad'} editable={editable}
                 placeholder={f.key === 'vit_b12' ? 'e.g. 350, <105, >2106' : undefined}
-                value={labs[f.key]} onChangeText={t => setLabs(prev => ({ ...prev, [f.key]: t }))}
-                warn={outOfRange(f, nums[f.key] ?? null) ? `Outside ${f.warn[0]}–${f.warn[1]}; check the report` : null} />
+                value={labs[f.key]} onChangeText={t => { setLabs(prev => ({ ...prev, [f.key]: t })); setScanned(prev => prev.filter(x => x !== f.key)); }}
+                warn={outOfRange(f, nums[f.key] ?? null) ? `Outside ${f.warn[0]}–${f.warn[1]}; check the report`
+                  : scanned.includes(f.key) ? 'From the scan — check' : null}
+                onFocus={() => setScanned(prev => prev.filter(x => x !== f.key))} />
             ))}
             {g.title === 'CBC' ? <Text style={{ color: C.primary, fontWeight: '600' }}>NLR {calc.nlr ?? '-'} · PLR {calc.plr ?? '-'}</Text> : null}
             {g.title === 'LFT' ? <Text style={{ color: C.primary, fontWeight: '600' }}>Globulin {calc.glob ?? '-'} · AGR {calc.agr ?? '-'}</Text> : null}
           </Card>
         ))}
+
+        <Card>
+          <H>Lesion photos</H>
+          {saved.length ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+              {saved.map(x => <Thumb key={x.id} photo={x} url={savedUrls[x.storage_path]} size={84} onPress={() => router.push(`/photo/${x.id}`)} />)}
+            </View>
+          ) : null}
+          {!p.photo_consent ? <Muted>No photo consent recorded for this patient. Tick it in Edit details first.</Muted>
+            : editable ? (
+              <View>
+                <Text style={{ fontSize: 13, fontWeight: '600', color: C.ink, marginBottom: 4 }}>Body site</Text>
+                <Choice value={site as any} options={[...BODY_SITES]} onChange={setSite} />
+                <CaptureButtons kind="lesion" onPicked={file => setPending(prev => [...prev, { file, label: site, kind: 'lesion', site }])} />
+              </View>
+            ) : null}
+          <PendingList items={pending} onRemove={i => setPending(prev => prev.filter((_, j) => j !== i))} />
+          {pending.length ? <Muted>Uploaded when you save the visit.</Muted> : null}
+        </Card>
 
         <Card>
           <Field label="Notes" value={notes} onChangeText={setNotes} multiline editable={editable} />

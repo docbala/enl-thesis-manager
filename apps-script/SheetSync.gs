@@ -29,6 +29,7 @@ var CFG = {
   BACKUP_FOLDER: 'ENL Thesis Backups',
   EMAIL: 'happyneemtree@gmail.com',   // where backup emails go
   KEEP_WEEKLY: 12,
+  APP_URL: 'https://docbala.github.io/enl-thesis-manager',   // photo links in the sheet open here (sign-in needed)
 };
 
 var P_COLS = ['cr_no', 'enrollment_date', 'uhid', 'opd_slip_no', 'patient_name', 'age', 'sex', 'relative_name',
@@ -37,14 +38,14 @@ var P_COLS = ['cr_no', 'enrollment_date', 'uhid', 'opd_slip_no', 'patient_name',
   'b_hb', 'b_nlr', 'b_plr', 'b_agr', 'b_vit_d3', 'b_uric_acid', 'enl_developed', 'next_due_date', 'patient_status',
   'opd_slip_url', 'diagnostic_report_url'];                       // 33 columns = A..AG
 var P_DATES = { enrollment_date: 1, next_due_date: 1 };
-var P_APP = ['APP_Patient_UUID', 'APP_MDT_Start_Date', 'APP_MDT_Start_Confirmed', 'APP_Synced_At', 'APP_Followups_Completed'];
+var P_APP = ['APP_Patient_UUID', 'APP_MDT_Start_Date', 'APP_MDT_Start_Confirmed', 'APP_Synced_At', 'APP_Followups_Completed', 'APP_Profile_Photo'];
 var P_KEEP_SHEET_VALUE = 21;   // Followups_Completed (column V) is a date-typed column in the sheet's table: never written
 
 var V_COLS = ['visit_id', 'cr_no', 'visit_type', 'visit_date', 'hb', 'tlc', 'granulocyte_pct', 'lymphocyte_pct', 'platelets',
   'nlr', 'plr', 'total_protein', 'albumin', 'globulin', 'agr', 'vit_d3', 'vit_b12', 'uric_acid', 'creatinine', 'sgot', 'sgpt',
   'alp', 'esr', 'crp', 'enl_reaction', 'ess_score', 'clinical_notes', 'report_url', 'urea', 'hba1c'];   // 30 columns = A..AD
 var V_DATES = { visit_date: 1 };
-var V_APP = ['APP_Visit_UUID', 'APP_Unscheduled', 'APP_Prednisolone_mg', 'APP_Weight_kg', 'APP_Synced_At', 'APP_Deleted', 'APP_ESS_Items', 'APP_ESS_Band'];
+var V_APP = ['APP_Visit_UUID', 'APP_Unscheduled', 'APP_Prednisolone_mg', 'APP_Weight_kg', 'APP_Synced_At', 'APP_Deleted', 'APP_ESS_Items', 'APP_ESS_Band', 'APP_Lesion_Photos'];
 
 // New data from the app gets its own tabs (the old app never reads them). Column: [header, field].
 var ESS_KEYS = ['pain', 'fever', 'lesion_number', 'lesion_inflammation', 'lesion_extent', 'peripheral_oedema', 'bone_pain',
@@ -226,7 +227,8 @@ function writePatient_(sheet, idx, p) {
   var vals = toPatientRow(p);
   var app = { APP_Patient_UUID: p.id, APP_MDT_Start_Date: asDate_(p.mdt_start_date),
     APP_MDT_Start_Confirmed: p.mdt_start_estimated ? 'N' : 'Y', APP_Synced_At: new Date(),
-    APP_Followups_Completed: p.followups_completed === null || p.followups_completed === undefined ? '' : p.followups_completed };
+    APP_Followups_Completed: p.followups_completed === null || p.followups_completed === undefined ? '' : p.followups_completed,
+    APP_Profile_Photo: p.profile_photo_id ? photoLink_(p.profile_photo_id) : '' };
   if (row) {
     vals[P_KEEP_SHEET_VALUE] = idx.data[row - 1][P_KEEP_SHEET_VALUE];   // leave the old app's value as it is
     sheet.getRange(row, 1, 1, vals.length).setValues([vals]);
@@ -245,7 +247,9 @@ function writeVisit_(sheet, idx, v) {
   var app = { APP_Visit_UUID: v.id, APP_Unscheduled: v.is_unscheduled ? 'Y' : 'N', APP_Prednisolone_mg: v.prednisolone_mg,
     APP_Weight_kg: v.weight_kg, APP_Synced_At: new Date(), APP_Deleted: v.deleted_at ? 'Deleted in app' : '',
     APP_ESS_Items: v.ess_items ? ESS_KEYS.map(function (k) { var x = v.ess_items[k]; return x === null || x === undefined ? '-' : x; }).join(',') : '',
-    APP_ESS_Band: v.ess_items ? (v.ess_items.total >= 9 ? 'Moderate-severe (>=9)' : 'Mild (<9)') : '' };
+    APP_ESS_Band: v.ess_items ? (v.ess_items.total >= 9 ? 'Moderate-severe (>=9)' : 'Mild (<9)') : '',
+    // one line per lesion photo: "Body site: link"
+    APP_Lesion_Photos: (v.lesion_photos || []).map(function (x) { return (x.body_site || 'Lesion') + ': ' + photoLink_(x.id); }).join('\n') };
   if (row) {
     if (!v.deleted_at) sheet.getRange(row, 1, 1, vals.length).setValues([vals]);   // a deleted visit keeps its old values
   } else {
@@ -363,6 +367,8 @@ function asDate_(iso) {
   return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : iso;
 }
 
+function photoLink_(id) { return CFG.APP_URL + '/photo/' + id; }
+
 // ---------------------------------------------------------------- weekly backup
 
 function weeklyBackup() {
@@ -379,9 +385,12 @@ function weeklyBackup() {
     Drive.Files.create({ name: name + '.json', parents: [folder], mimeType: 'application/json' },
       Utilities.newBlob(JSON.stringify(dump), 'application/json', name + '.json'));
     var removed = pruneBackups_(folder);
+    var photos = '';
+    try { photos = backupPhotos_(folder); } catch (pe) { photos = 'Photo copy FAILED: ' + (pe && pe.message || pe) + ' (it will retry next week)'; }
     if (to) MailApp.sendEmail(to, 'ENL Thesis backup done: ' + today_(),
       'Backup saved in Google Drive folder "' + CFG.BACKUP_FOLDER + '".\n\n' +
       'Patients: ' + dump.counts.patients + '\nVisits: ' + dump.counts.visits + '\nAudit entries: ' + dump.counts.audit_entries +
+      (photos ? '\n\n' + photos : '') +
       (removed ? '\n\nOld backups removed (keeping the last ' + CFG.KEEP_WEEKLY + ' weeks and one per month): ' + removed : ''));
   } catch (e) {
     if (to) MailApp.sendEmail(to, 'ENL Thesis backup FAILED: ' + today_(), 'The weekly backup did not complete.\n\n' + (e && e.message || e));
@@ -390,6 +399,46 @@ function weeklyBackup() {
 }
 
 function backupNow() { weeklyBackup(); }
+
+// Copies photos and scans added since the last run into "<backup folder>/Photos/<CR No>/".
+// Picks up where it stopped if a run ends early (Apps Script allows about 6 minutes).
+function backupPhotos_(root) {
+  var props = PropertiesService.getScriptProperties();
+  var since = props.getProperty('PHOTO_BACKUP_SINCE') || '1970-01-01';
+  var folders = JSON.parse(props.getProperty('PHOTO_FOLDERS') || '{}');
+  var photosRoot = folders.__root || (folders.__root = childFolder_(root, 'Photos'));
+  var start = Date.now(), copied = 0, more = true, stopped = false;
+  while (more && Date.now() - start < 4 * 60 * 1000) {
+    var res = JSON.parse(UrlFetchApp.fetch(CFG.SUPABASE_URL + '/functions/v1/photo-backup', {
+      method: 'post', contentType: 'application/json', headers: { apikey: CFG.SUPABASE_KEY },
+      payload: JSON.stringify({ secret: CFG.SYNC_SECRET, since: since }), muteHttpExceptions: true }).getContentText());
+    if (res.error) throw new Error(res.error);
+    (res.items || []).forEach(function (it) {
+      if (stopped || Date.now() - start > 5 * 60 * 1000) { stopped = true; return; }
+      var cr = it.cr_no || 'unknown';
+      var dir = folders[cr] || (folders[cr] = childFolder_(photosRoot, cr));
+      var blob = UrlFetchApp.fetch(it.url).getBlob();
+      var ext = it.mime_type === 'application/pdf' ? 'pdf' : 'jpg';
+      var name = [cr, String(it.taken_at).slice(0, 10), it.kind, it.body_site || '', it.id.slice(0, 8)].filter(String).join('_').replace(/[\/\s]+/g, '-') + '.' + ext;
+      Drive.Files.create({ name: name, parents: [dir], mimeType: it.mime_type }, blob.setName(name));
+      since = it.created_at; copied++;
+      props.setProperty('PHOTO_BACKUP_SINCE', since);
+    });
+    more = !!res.more || stopped;
+    if (stopped) break;
+  }
+  props.setProperty('PHOTO_FOLDERS', JSON.stringify(folders));
+  return copied ? 'Photos and scans copied: ' + copied + (more ? ' (more left; they continue next run)' : '') : 'No new photos this week.';
+}
+
+function childFolder_(parent, name) {
+  var q = "'" + parent + "' in parents and name = '" + name.replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+  var f = (Drive.Files.list({ q: q, fields: 'files(id)' }).files || [])[0];
+  return f ? f.id : Drive.Files.create({ name: name, parents: [parent], mimeType: 'application/vnd.google-apps.folder' }).id;
+}
+
+// Run by hand to copy photos now without the full backup.
+function backupPhotosNow() { Logger.log(backupPhotos_(backupFolder_())); }
 
 function writeTable_(sheet, rows) {
   if (!rows || !rows.length) { sheet.getRange(1, 1).setValue('(empty)'); return; }

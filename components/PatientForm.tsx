@@ -7,6 +7,8 @@ import type { Patient } from '../lib/types';
 import { addMonths, isISODate, todayISO } from '../lib/dates';
 import { toNum } from '../lib/labs';
 import { Btn, C, Card, Choice, Field, H, Muted, page } from './ui';
+import { Picked, savePhoto, scanDocument } from '../lib/photos';
+import { CaptureButtons, PendingList } from './Photos';
 
 const SEX = ['Male', 'Female', 'Other'] as const;
 const SPECTRUM = ['LL', 'BL', 'BB', 'BT', 'TT', 'PN'] as const;
@@ -29,10 +31,35 @@ export function PatientForm({ existing }: { existing?: Patient }) {
     diagnostic_status: str(existing?.diagnostic_status) || 'Confirmed',
     height_cm: str(existing?.height_cm), weight_kg: str(existing?.weight_kg),
     family_history: str(existing?.family_history), socioeconomic_status: str(existing?.socioeconomic_status),
+    opd_slip_no: str(existing?.opd_slip_no),
   }));
+  const [consent, setConsent] = useState(!!existing?.photo_consent);
+  const [pending, setPending] = useState<{ file: Picked; label: string; kind: 'opd_slip' | 'consent' }[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [scanned, setScanned] = useState<string[]>([]);   // fields filled by the scan, shown highlighted until checked
   const [startConfirmed, setStartConfirmed] = useState(existing ? !existing.mdt_start_estimated : false);
   const [busy, setBusy] = useState(false);
-  const set = (k: string) => (v: string) => setF(prev => ({ ...prev, [k]: v }));
+  const set = (k: string) => (v: string) => { setF(prev => ({ ...prev, [k]: v })); setScanned(prev => prev.filter(x => x !== k)); };
+
+  // Gemini reads the OPD slip; filled fields are highlighted for checking. The slip image is kept with the record.
+  async function scanSlip(file: Picked) {
+    setPending(prev => [...prev.filter(x => x.kind !== 'opd_slip'), { file, label: 'OPD slip', kind: 'opd_slip' }]);
+    setScanning(true);
+    try {
+      const r = (await scanDocument('opd_slip', file)).fields;
+      const map: Record<string, unknown> = {
+        patient_name: r.patient_name, age: r.age, sex: r.sex, relative_name: r.relative_name, contact_no: r.contact,
+        uhid: r.uhid, address: r.address, opd_slip_no: r.opd_slip_no, mdt_status: r.mdt_status,
+        initial_mdt_months: r.mdt_status === 'On MDT' ? r.mdt_month : r.mdt_status ? 1 : null,
+      };
+      const got = Object.entries(map).filter(([, v]) => v !== null && v !== undefined && v !== '');
+      if (!got.length) { notify('Nothing readable', 'Please type the details.'); }
+      setF(prev => ({ ...prev, ...Object.fromEntries(got.map(([k, v]) => [k, String(v)])) }));
+      setScanned(got.map(([k]) => k));
+    } catch (e: any) { notify('Scan failed', e.message + '\n\nThe slip is still attached; type the details.'); }
+    setScanning(false);
+  }
+  const hl = (k: string) => scanned.includes(k) ? 'Filled from the OPD slip — check' : null;
 
   // Suggest MDT start = enrolment date minus (MDT month at enrolment - 1) months, until the user types a real date.
   useEffect(() => {
@@ -61,12 +88,14 @@ export function PatientForm({ existing }: { existing?: Patient }) {
       leprosy_spectrum: f.leprosy_spectrum || null, baseline_bi: toNum(f.baseline_bi), baseline_mi: toNum(f.baseline_mi),
       diagnostic_status: f.diagnostic_status, height_cm: h, weight_kg: w,
       family_history: f.family_history || null, socioeconomic_status: f.socioeconomic_status || null,
+      opd_slip_no: f.opd_slip_no.trim() || null, photo_consent: consent,
     };
     setBusy(true);
     if (existing) {
       const { error } = await supabase.from('patients').update(row).eq('id', existing.id);
       setBusy(false);
       if (error) { notify('Could not save', error.message); return; }
+      await uploadPending(existing.id);
       router.back();
     } else {
       const prefix = f.diagnostic_status === 'Confirmed' ? 'HD' : 'SUS';
@@ -74,27 +103,47 @@ export function PatientForm({ existing }: { existing?: Patient }) {
       if (idErr) { setBusy(false); notify('Could not get a study number', idErr.message); return; }
       const { data, error } = await supabase.from('patients')
         .insert({ ...row, cr_no: cr, patient_status: prefix === 'HD' ? 'Active' : 'Awaiting Report' }).select('id').single();
+      if (error) { setBusy(false); notify('Could not save', error.message); return; }
+      await uploadPending(data.id);
       setBusy(false);
-      if (error) { notify('Could not save', error.message); return; }
       notify('Enrolled', `Study number ${cr}`);
       router.replace(`/patient/${data.id}`);
     }
   }
 
+  async function uploadPending(patientId: string) {
+    const failed: string[] = [];
+    for (const it of pending) {
+      try { await savePhoto({ patientId, kind: it.kind, file: it.file }); } catch (e: any) { failed.push(`${it.label}: ${e.message}`); }
+    }
+    if (failed.length) notify('Saved, but some files did not upload', failed.join('\n'));
+  }
+
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView style={{ backgroundColor: C.bg }} contentContainerStyle={page} keyboardShouldPersistTaps="handled">
+        {!existing ? (
+          <Card style={{ backgroundColor: '#EAF4FB', borderColor: '#BFE0F4' }}>
+            <H>Scan OPD slip</H>
+            <Muted>Gemini reads the slip and fills the details below. Check every highlighted field.</Muted>
+            <CaptureButtons kind="opd_slip" onPicked={scanSlip} disabled={scanning} />
+            {scanning ? <Muted>Reading the slip…</Muted> : null}
+          </Card>
+        ) : null}
+
         <Card>
           <H>Patient</H>
-          <Field label="Name" value={f.patient_name} onChangeText={set('patient_name')} />
-          <Field label="Age" unit="years" keyboardType="number-pad" value={f.age} onChangeText={set('age')} />
+          <Field label="Name" warn={hl('patient_name')} value={f.patient_name} onChangeText={set('patient_name')} />
+          <Field label="Age" unit="years" warn={hl('age')} keyboardType="number-pad" value={f.age} onChangeText={set('age')} />
           <Text style={{ fontSize: 13, fontWeight: '600', color: C.ink, marginBottom: 4 }}>Sex</Text>
           <Choice value={f.sex as any} options={[...SEX]} onChange={set('sex')} />
-          <Field label="Relative name (S/O, W/O)" value={f.relative_name} onChangeText={set('relative_name')} />
+          <Field label="Relative name (S/O, W/O)" warn={hl('relative_name')} value={f.relative_name} onChangeText={set('relative_name')} />
           <Field label="Phone" keyboardType="phone-pad" value={f.contact_no} onChangeText={set('contact_no')}
-            warn={phoneDigits && phoneDigits.length !== 10 ? `${phoneDigits.length} digits; Indian mobiles have 10` : null} />
-          <Field label="UHID" autoCapitalize="characters" value={f.uhid} onChangeText={set('uhid')} />
-          <Field label="Address" value={f.address} onChangeText={set('address')} multiline />
+            warn={phoneDigits && phoneDigits.length !== 10 ? `${phoneDigits.length} digits; Indian mobiles have 10` : hl('contact_no')} />
+          <Field label="UHID" autoCapitalize="characters" warn={hl('uhid')} value={f.uhid} onChangeText={set('uhid')} />
+          <Field label="Address" warn={hl('address')} value={f.address} onChangeText={set('address')} multiline />
+          <Field label="OPD slip no." warn={hl('opd_slip_no')} value={f.opd_slip_no} onChangeText={set('opd_slip_no')} />
+          {scanned.includes('sex') || scanned.includes('mdt_status') ? <Muted>Sex and MDT status were also filled from the slip; check them.</Muted> : null}
         </Card>
 
         <Card>
@@ -134,6 +183,17 @@ export function PatientForm({ existing }: { existing?: Patient }) {
           <Choice value={f.family_history as any} options={[...FAMILY]} onChange={set('family_history')} />
           <Text style={{ fontSize: 13, fontWeight: '600', color: C.ink, marginBottom: 4 }}>Socioeconomic status (modified Kuppuswamy)</Text>
           <Choice value={f.socioeconomic_status as any} options={[...SES]} onChange={set('socioeconomic_status')} />
+        </Card>
+
+        <Card>
+          <H>Photo consent</H>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: C.ink, fontWeight: '600', flex: 1 }}>Patient consented to clinical photographs</Text>
+            <Switch value={consent} onValueChange={setConsent} />
+          </View>
+          <Muted>Lesion photos cannot be saved without this. Attach the signed form if you have it.</Muted>
+          <CaptureButtons kind="consent" allowFile onPicked={file => setPending(prev => [...prev, { file, label: 'Consent form', kind: 'consent' }])} />
+          <PendingList items={pending} onRemove={i => setPending(prev => prev.filter((_, j) => j !== i))} />
         </Card>
 
         <Btn title={existing ? 'Save changes' : 'Enrol patient'} onPress={save} busy={busy} />

@@ -10,6 +10,7 @@ import { fmt } from '../../lib/dates';
 import { Btn, C, Card, Chip, ContactButtons, H, Muted, Screen, s, TONES } from '../../components/ui';
 import { SlotStrip, slotSummary } from '../../components/SlotStrip';
 import { EnlCard } from '../../components/EnlCard';
+import { Gallery, ProfileAvatar } from '../../components/Gallery';
 
 const L = (v: Visit, k: string) => { const x = v[k]; return x === null || x === undefined ? '-' : String(x); };
 
@@ -62,9 +63,12 @@ export default function PatientScreen() {
     <Screen refreshing={loading} onRefresh={load}>
       <Stack.Screen options={{ title: p.cr_no }} />
       <Card>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          {p.mdt_status?.includes('Naive') ? <Chip text="Newly Diagnosed (Naive)" tone="good" big /> : <Chip text={p.mdt_status ?? 'MDT status?'} big />}
-          {p.enl_developed ? <Chip text="ENL" tone="bad" big /> : null}
+        <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+          <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+            {p.mdt_status?.includes('Naive') ? <Chip text="Newly Diagnosed (Naive)" tone="good" big /> : <Chip text={p.mdt_status ?? 'MDT status?'} big />}
+            {p.enl_developed ? <Chip text="ENL" tone="bad" big /> : null}
+          </View>
+          <ProfileAvatar patientId={p.id} editable={canEdit(role)} refreshKey={tick} />
         </View>
         <Text style={{ fontSize: 22, color: C.ink }}>
           <Text style={{ fontWeight: '800' }}>Name: </Text>{p.patient_name} ({p.age ?? '?'}/{p.sex ?? '?'})
@@ -115,6 +119,8 @@ export default function PatientScreen() {
       </Card>
 
       <EnlCard patientId={p.id} editable={canEdit(role)} refreshKey={tick} />
+
+      <Gallery patientId={p.id} editable={canEdit(role)} refreshKey={tick} consent={!!p.photo_consent} />
 
       {canEdit(role) ? <Btn title="Add visit" icon="＋" onPress={() => router.push(`/visit/new?patient=${p.id}`)} /> : null}
 

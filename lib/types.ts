@@ -8,6 +8,7 @@ export type Patient = {
   family_history: string | null; socioeconomic_status: string | null;
   enl_developed: boolean | null; patient_status: string | null;
   import_flags: string[]; reviewed_at: string | null;
+  photo_consent: boolean | null; opd_slip_no: string | null;
 };
 
 export type Visit = {
