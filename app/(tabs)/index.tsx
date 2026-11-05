@@ -4,6 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { supabase, tbl } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import { GuestBanner } from '../../components/Guest';
+import { UpdateNotice } from '../../components/UpdateNotice';
 import { exportAnalysisBundle } from '../../lib/analysisExport';
 import type { Patient, Progress, Slot } from '../../lib/types';
 import { ask, notify } from '../../lib/dialog';
@@ -147,6 +148,7 @@ export default function Dashboard() {
 
   return (
     <Screen refreshing={loading} onRefresh={load}>
+      <UpdateNotice />
       <GuestBanner />
       <HeaderCard />
 

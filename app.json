@@ -2,7 +2,7 @@
   "expo": {
     "name": "ENL Thesis Manager",
     "slug": "enl-thesis-manager",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -10,17 +10,34 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F4F6F9"
     },
     "android": {
       "package": "in.mgmmc.enlthesis",
+      "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
-      }
+        "backgroundColor": "#1F4E78"
+      },
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ]
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "The camera is used to photograph lesions, consent forms, lab reports and OPD slips for the study.",
+          "photosPermission": "Photos you choose are attached to the patient record.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "extra": {
       "supabaseUrl": "https://pmqzhjzpututodtzovut.supabase.co",
