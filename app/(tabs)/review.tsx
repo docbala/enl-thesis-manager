@@ -5,25 +5,33 @@ import { router, useFocusEffect } from 'expo-router';
 import { supabase } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import { fmt } from '../../lib/dates';
-import { Btn, C, Chip, Muted, page, TONES } from '../../components/ui';
+import { Btn, C, Chip, Muted, page, Screen, TONES } from '../../components/ui';
+import { GuestBanner, MembersOnly } from '../../components/Guest';
+import type { Suggestion } from '../../components/Suggestions';
 
 type Item = { kind: 'patient' | 'visit' | 'conflict'; record_id: string; patient_id: string; cr_no: string;
   patient_name: string; visit_id: string | null; visit_date: string | null; notes: string[]; conflict_id: number | null };
 
 // Records to check: notes from the import, rows changed in the old app, and changes made in both apps.
 export default function Review() {
-  const { role } = useSession();
+  const { role, guest } = useSession();
   const [items, setItems] = useState<Item[]>([]);
+  const [sugg, setSugg] = useState<(Suggestion & { patient: { cr_no: string } | null })[]>([]);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('v_review_items').select('*').order('cr_no');
+    if (guest) { setLoading(false); return; }
+    const [{ data }, sg] = await Promise.all([
+      supabase.from('v_review_items').select('*').order('cr_no'),
+      supabase.from('suggestions').select('*, patient:patients(cr_no)').is('resolved_at', null).order('created_at', { ascending: false }),
+    ]);
+    setSugg((sg.data ?? []) as any);
     const rows = (data ?? []) as Item[];
     rows.sort((a, b) => (a.kind === 'conflict' ? 0 : 1) - (b.kind === 'conflict' ? 0 : 1));   // conflicts first
     setItems(rows);
     setLoading(false);
-  }, []);
+  }, [guest]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   async function markChecked(it: Item) {
@@ -43,11 +51,27 @@ export default function Review() {
 
   const open = (it: Item) => router.push(it.kind === 'patient' || (it.kind === 'conflict' && !it.visit_id) ? `/patient/${it.patient_id}` : `/visit/${it.record_id}`);
 
+  if (guest) return <Screen><GuestBanner /><MembersOnly what="The review list (import notes, sheet changes and team suggestions)" /></Screen>;
+
   return (
     <FlatList data={items} keyExtractor={i => i.kind + i.record_id + (i.conflict_id ?? '')}
       refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
       style={{ backgroundColor: C.bg }} contentContainerStyle={page}
-      ListHeaderComponent={<Muted>{items.length} records to check. Open each one, correct it from the report, then mark it checked.</Muted>}
+      ListHeaderComponent={<View>
+        {sugg.length ? (
+          <View style={{ backgroundColor: TONES.blue.bg, borderColor: TONES.blue.border, borderWidth: 1, borderRadius: 14, padding: 14, marginBottom: 12 }}>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: C.primary, marginBottom: 4 }}>Suggestions from the team ({sugg.length})</Text>
+            {sugg.map(x => (
+              <Pressable key={x.id} onPress={() => router.push(x.visit_id ? `/visit/${x.visit_id}` : `/patient/${x.patient_id}`)}
+                style={{ borderTopWidth: 1, borderTopColor: TONES.blue.border, paddingVertical: 8 }}>
+                <Text style={{ color: C.ink }}><Text style={{ fontWeight: '800' }}>{x.patient?.cr_no}{x.visit_id ? ' · visit' : ''}: </Text>{x.body}</Text>
+                <Muted>{x.author_email ?? 'Team member'} · {fmt(x.created_at.slice(0, 10))}</Muted>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+        <Muted>{items.length} records to check. Open each one, correct it from the report, then mark it checked.</Muted>
+      </View>}
       ListEmptyComponent={<Muted>Nothing to check.</Muted>}
       renderItem={({ item: it }) => {
         const conflict = it.kind === 'conflict';

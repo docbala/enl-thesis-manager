@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
-import { supabase } from '../lib/supabase';
+import { supabase, tbl } from '../lib/supabase';
 import { ask, notify } from '../lib/dialog';
 import { fmt, isISODate, todayISO } from '../lib/dates';
 import { toNum } from '../lib/labs';
@@ -29,9 +29,9 @@ export function EnlCard({ patientId, editable, refreshKey }: { patientId: string
 
   const load = useCallback(async () => {
     const [e, f, d] = await Promise.all([
-      supabase.from('v_episode_types').select('*').eq('patient_id', patientId).order('onset_date', { ascending: false }),
-      supabase.from('v_steroid_flags').select('*').eq('patient_id', patientId).maybeSingle(),
-      supabase.from('drug_doses').select('*').eq('patient_id', patientId).order('start_date', { ascending: false }),
+      supabase.from(tbl('v_episode_types')).select('*').eq('patient_id', patientId).order('onset_date', { ascending: false }),
+      supabase.from(tbl('v_steroid_flags')).select('*').eq('patient_id', patientId).maybeSingle(),
+      supabase.from(tbl('drug_doses')).select('*').eq('patient_id', patientId).order('start_date', { ascending: false }),
     ]);
     setEps((e.data ?? []) as Episode[]); setFlags(f.data as Flags | null); setDoses((d.data ?? []) as Dose[]);
   }, [patientId]);
@@ -40,7 +40,7 @@ export function EnlCard({ patientId, editable, refreshKey }: { patientId: string
   async function addDose() {
     const mg = toNum(dMg);
     if (!isISODate(dDate) || mg == null || mg < 0) { notify('Check the dose', 'Enter a date (YYYY-MM-DD) and a dose in mg/day (0 = stopped).'); return; }
-    const { error } = await supabase.from('drug_doses').upsert({ patient_id: patientId, drug, start_date: dDate, mg_per_day: mg },
+    const { error } = await supabase.from(tbl('drug_doses')).upsert({ patient_id: patientId, drug, start_date: dDate, mg_per_day: mg },
       { onConflict: 'patient_id,drug,start_date' });
     if (error) notify('Could not save', error.message); else { setAdding(false); setDMg(''); load(); }
   }
@@ -48,12 +48,12 @@ export function EnlCard({ patientId, editable, refreshKey }: { patientId: string
   async function removeDose(d: Dose) {
     if (d.source_visit) { notify('Recorded at a visit', 'Change this dose in the visit itself.'); return; }
     if (!(await ask('Remove dose change?', `${d.drug} ${d.mg_per_day} mg/day from ${fmt(d.start_date)}`, 'Remove', true))) return;
-    const { error } = await supabase.from('drug_doses').delete().eq('id', d.id);
+    const { error } = await supabase.from(tbl('drug_doses')).delete().eq('id', d.id);
     if (error) notify('Could not remove', error.message); else load();
   }
 
   async function saveEpisode(ep: Episode, patch: Partial<Episode>) {
-    const { error } = await supabase.from('enl_episodes').update(patch).eq('id', ep.id);
+    const { error } = await supabase.from(tbl('enl_episodes')).update(patch).eq('id', ep.id);
     if (error) notify('Could not save', error.message); else load();
   }
 
@@ -63,7 +63,7 @@ export function EnlCard({ patientId, editable, refreshKey }: { patientId: string
   }
 
   async function newEpisode() {
-    const { error } = await supabase.from('enl_episodes').insert({ patient_id: patientId, onset_date: todayISO() });
+    const { error } = await supabase.from(tbl('enl_episodes')).insert({ patient_id: patientId, onset_date: todayISO() });
     if (error) notify('Could not add', error.message); else load();
   }
 

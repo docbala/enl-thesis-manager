@@ -1,8 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../../lib/supabase';
+import { supabase, tbl } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
+import { GuestBanner } from '../../components/Guest';
 import type { Patient, Progress, Slot } from '../../lib/types';
 import { ask, notify } from '../../lib/dialog';
 import { comingSaturday, reminderText } from '../../lib/messages';
@@ -35,14 +36,14 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     setLoading(true);
     const [pt, pg, sl, vs, rv, sq, me, fl] = await Promise.all([
-      supabase.from('patients').select('*').is('deleted_at', null),
-      supabase.from('v_patient_progress').select('*'),
-      supabase.from('v_schedule').select('*'),
-      supabase.from('visits').select('patient_id, visit_type, visit_date').is('deleted_at', null).order('visit_date', { ascending: false }),
-      supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }),
-      supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null),
-      supabase.from('members').select('can_export').eq('user_id', session?.user.id ?? '').maybeSingle(),
-      supabase.from('v_steroid_flags').select('*'),
+      supabase.from(tbl('patients')).select('*').is('deleted_at', null),
+      supabase.from(tbl('v_patient_progress')).select('*'),
+      supabase.from(tbl('v_schedule')).select('*'),
+      supabase.from(tbl('visits')).select('patient_id, visit_type, visit_date').is('deleted_at', null).order('visit_date', { ascending: false }),
+      session ? supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }) : Promise.resolve({ count: 0 } as any),
+      session ? supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null) : Promise.resolve({ error: true } as any),
+      session ? supabase.from('members').select('can_export').eq('user_id', session.user.id).maybeSingle() : Promise.resolve({ data: null } as any),
+      supabase.from(tbl('v_steroid_flags')).select('*'),
     ]);
     setFlags(((fl.data ?? []) as SteroidFlag[]).filter(f => f.steroid_dependent || f.possible_nonresponder || f.taper_relapses > 0 || f.stop_relapses > 0)
       .sort((a, b) => a.cr_no.localeCompare(b.cr_no)));
@@ -92,7 +93,7 @@ export default function Dashboard() {
     };
   }, [patients, progress, slots]);
 
-  if (!role) {
+  if (session && !role) {
     return (
       <Screen>
         <HeaderCard />
@@ -128,6 +129,7 @@ export default function Dashboard() {
 
   return (
     <Screen refreshing={loading} onRefresh={load}>
+      <GuestBanner />
       <HeaderCard />
 
       <Card>
@@ -220,8 +222,8 @@ export default function Dashboard() {
       {role === 'owner' ? <Btn kind="ghost" title="Team & settings" icon="👥" onPress={() => router.push('/team')} /> : null}
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-        {pendingSync !== null ? <Chip text={`Sheet copy: ${pendingSync} waiting`} tone={pendingSync ? 'warn' : 'good'} /> : <View />}
-        <Pressable onPress={() => supabase.auth.signOut()}><Text style={{ color: C.primary, fontWeight: '700', padding: 8 }}>Sign out</Text></Pressable>
+        {session && pendingSync !== null ? <Chip text={`Sheet copy: ${pendingSync} waiting`} tone={pendingSync ? 'warn' : 'good'} /> : <View />}
+        {session ? <Pressable onPress={() => supabase.auth.signOut()}><Text style={{ color: C.primary, fontWeight: '700', padding: 8 }}>Sign out</Text></Pressable> : null}
       </View>
     </Screen>
   );

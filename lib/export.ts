@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import { supabase } from './supabase';
+import { supabase, tbl } from './supabase';
 import { todayISO } from './dates';
 
 const PATIENT_COLS = ['cr_no', 'patient_name', 'age', 'sex', 'uhid', 'contact_no', 'address', 'enrollment_date', 'mdt_start_date',
@@ -21,8 +21,8 @@ const cell = (v: unknown) => {
 // Master dataset: one row per visit with that patient's details in front. Identifying columns only if asked.
 export async function exportMasterDataset(identified: boolean) {
   const [pt, vs] = await Promise.all([
-    supabase.from('patients').select('*').is('deleted_at', null),
-    supabase.from('visits').select('*').is('deleted_at', null).order('visit_date'),
+    supabase.from(tbl('patients')).select('*').is('deleted_at', null),
+    supabase.from(tbl('visits')).select('*').is('deleted_at', null).order('visit_date'),
   ]);
   if (pt.error || vs.error) throw new Error((pt.error ?? vs.error)!.message);
   const pcols = PATIENT_COLS.filter(c => identified || !IDENTIFYING.has(c));

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, View } from 'react-native';
 import { ask, notify } from '../../lib/dialog';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../../lib/supabase';
+import { supabase, tbl } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import type { Patient, Slot, Visit } from '../../lib/types';
 import { ALL_LAB_FIELDS, hba1cDue, LAB_GROUPS, LabKey, outOfRange, ratios, toNum } from '../../lib/labs';
@@ -12,6 +12,8 @@ import { EssForm } from '../../components/EssForm';
 import { ESS_ITEMS, EssScores, essScored, essTotal } from '../../lib/ess';
 import { BODY_SITES, Photo, Picked, savePhoto, scanDocument } from '../../lib/photos';
 import { CaptureButtons, PendingList, Thumb, useSignedUrls } from '../../components/Photos';
+import { GuestBanner, MembersOnly } from '../../components/Guest';
+import { Suggestions } from '../../components/Suggestions';
 
 type Pending = { file: Picked; label: string; kind: 'lesion' | 'lab_report'; site?: string };
 const norm = (x: unknown) => String(x ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -28,7 +30,7 @@ function slotFor(date: string, slots: Slot[]) {
 export default function VisitScreen() {
   const { id, patient } = useLocalSearchParams<{ id: string; patient?: string }>();
   const isNew = id === 'new';
-  const { role } = useSession();
+  const { role, guest } = useSession();
   const editable = canEdit(role);
 
   const [p, setP] = useState<Patient | null>(null);
@@ -55,25 +57,25 @@ export default function VisitScreen() {
     (async () => {
       let pid = patient as string | undefined;
       if (!isNew) {
-        const { data } = await supabase.from('visits').select('*').eq('id', id).single();
+        const { data } = await supabase.from(tbl('visits')).select('*').eq('id', id).single();
         const v = data as Visit; setVisit(v); pid = v.patient_id;
         setDate(v.visit_date);
         setKind(v.visit_type === 'Baseline Visit' ? 'Baseline' : v.is_unscheduled || !v.visit_type.startsWith('Month') ? 'Unscheduled' : 'Scheduled');
         setLabs(Object.fromEntries(ALL_LAB_FIELDS.map(f => [f.key,
           f.key === 'vit_b12' && v.vit_b12_flag ? v.vit_b12_flag + str(v.vit_b12) : str(v[f.key])])) as Lab);
         setEnl(!!v.enl_reaction); setPred(str(v.prednisolone_mg));
-        const { data: a } = await supabase.from('ess_assessments').select('*').eq('visit_id', v.id).maybeSingle();
+        const { data: a } = await supabase.from(tbl('ess_assessments')).select('*').eq('visit_id', v.id).maybeSingle();
         if (a) setEss(Object.fromEntries(ESS_ITEMS.map(i => [i.key, (a as any)[i.key]])) as EssScores);
         else if (v.ess_score != null) setOldEss(Number(v.ess_score));
-        const ph = await supabase.from('photos').select('*').eq('visit_id', v.id).is('deleted_at', null).order('taken_at');
+        const ph = guest ? { data: [] } : await supabase.from('photos').select('*').eq('visit_id', v.id).is('deleted_at', null).order('taken_at');
         setSaved((ph.data ?? []) as Photo[]);
         setWeight(str(v.weight_kg)); setNotes(v.clinical_notes && v.clinical_notes !== 'Verified & Saved' ? v.clinical_notes : '');
       }
       if (!pid) return;
       const [pt, sl, vs] = await Promise.all([
-        supabase.from('patients').select('*').eq('id', pid).single(),
-        supabase.from('v_schedule').select('*').eq('patient_id', pid).order('slot_month'),
-        supabase.from('visits').select('id').eq('patient_id', pid).eq('visit_type', 'Baseline Visit').is('deleted_at', null).limit(1),
+        supabase.from(tbl('patients')).select('*').eq('id', pid).single(),
+        supabase.from(tbl('v_schedule')).select('*').eq('patient_id', pid).order('slot_month'),
+        supabase.from(tbl('visits')).select('id').eq('patient_id', pid).eq('visit_type', 'Baseline Visit').is('deleted_at', null).limit(1),
       ]);
       setP(pt.data as Patient); setSlots((sl.data ?? []) as Slot[]);
       if (isNew && (vs.data ?? []).length === 0) setKind('Baseline');
@@ -149,16 +151,16 @@ export default function VisitScreen() {
       };
       setBusy(true);
       const res = visit
-        ? await supabase.from('visits').update(row).eq('id', visit.id).select('id').single()
-        : await supabase.from('visits').insert(row).select('id').single();
+        ? await supabase.from(tbl('visits')).update(row).eq('id', visit.id).select('id').single()
+        : await supabase.from(tbl('visits')).insert(row).select('id').single();
       if (res.error) { setBusy(false); notify('Could not save', res.error.message); return; }
       // ENLIST ESS items; the database copies the total to the visit and opens an ENL episode if needed
       if (enl && scored) {
-        const e = await supabase.from('ess_assessments').upsert({ visit_id: res.data.id, patient_id: p.id,
+        const e = await supabase.from(tbl('ess_assessments')).upsert({ visit_id: res.data.id, patient_id: p.id,
           ...Object.fromEntries(ESS_ITEMS.map(i => [i.key, ess[i.key] ?? null])) }, { onConflict: 'visit_id' });
         if (e.error) { setBusy(false); notify('Visit saved, but the ESS was not', e.error.message); return; }
       } else if (!enl && visit) {
-        await supabase.from('ess_assessments').delete().eq('visit_id', visit.id);
+        await supabase.from(tbl('ess_assessments')).delete().eq('visit_id', visit.id);
       }
       const failed: string[] = [];
       for (const it of pending) {
@@ -177,7 +179,7 @@ export default function VisitScreen() {
   async function remove() {
     if (!visit) return;
     if (!(await ask('Delete visit?', `${visit.visit_id} on ${fmt(visit.visit_date)} will be removed from the app (kept in the history).`, 'Delete', true))) return;
-    const { error } = await supabase.from('visits').update({ deleted_at: new Date().toISOString() }).eq('id', visit.id);
+    const { error } = await supabase.from(tbl('visits')).update({ deleted_at: new Date().toISOString() }).eq('id', visit.id);
     if (error) notify('Could not delete', error.message); else router.back();
   }
 
@@ -188,6 +190,7 @@ export default function VisitScreen() {
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Stack.Screen options={{ title: visit ? visit.visit_id : `New visit · ${p.cr_no}` }} />
       <ScrollView style={{ backgroundColor: C.bg }} contentContainerStyle={page} keyboardShouldPersistTaps="handled">
+        <GuestBanner compact />
         {flags.length && !visit?.reviewed_at ? (
           <Card style={{ backgroundColor: C.warnBg, borderColor: C.warn }}>
             <H>Check against the report</H>
@@ -197,7 +200,7 @@ export default function VisitScreen() {
         ) : null}
 
         <Card>
-          <Text style={{ fontWeight: '700', color: C.ink }}>{p.cr_no} · {p.patient_name}</Text>
+          <Text style={{ fontWeight: '700', color: C.ink }}>{p.cr_no}{guest ? '' : ` · ${p.patient_name}`}</Text>
           <Field label="Visit date" unit="YYYY-MM-DD" value={date} onChangeText={setDate} editable={editable} />
           <Choice value={kind} options={['Scheduled', 'Baseline', 'Unscheduled']} onChange={v => editable && setKind(v)} />
           <Text style={{ color: visitType && !slotTaken ? C.good : C.bad, fontWeight: '600' }}>
@@ -262,7 +265,7 @@ export default function VisitScreen() {
           </Card>
         ))}
 
-        <Card>
+        {guest ? <Card><H>Lesion photos</H><MembersOnly what="Photos" /></Card> : <Card>
           <H>Lesion photos</H>
           {saved.length ? (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
@@ -279,7 +282,9 @@ export default function VisitScreen() {
             ) : null}
           <PendingList items={pending} onRemove={i => setPending(prev => prev.filter((_, j) => j !== i))} />
           {pending.length ? <Muted>Uploaded when you save the visit.</Muted> : null}
-        </Card>
+        </Card>}
+
+        {visit && !guest ? <Suggestions patientId={p.id} visitId={visit.id} /> : null}
 
         <Card>
           <Field label="Notes" value={notes} onChangeText={setNotes} multiline editable={editable} />

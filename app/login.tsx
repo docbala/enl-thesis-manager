@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { KeyboardAvoidingView, Platform, Text } from 'react-native';
+import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { notify } from '../lib/dialog';
 import { Btn, C, Card, Field, HeaderCard, Muted, Screen } from '../components/ui';
@@ -37,7 +38,8 @@ export default function Login() {
           <Btn kind="ghost" title={mode === 'signin' ? 'First time? Create account' : 'Have an account? Sign in'}
             onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')} />
         </Card>
-        <Muted>Only invited members can see patient data. Ask the study owner for an invite.</Muted>
+        <Muted>Signing in shows patient identities and photos, and lets you edit or suggest changes as your role allows. Ask the study owner for an invite.</Muted>
+        <Btn kind="ghost" title="Back to view-only" onPress={() => router.canGoBack() ? router.back() : router.replace('/')} />
       </Screen>
     </KeyboardAvoidingView>
   );

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, Switch, Text, View } from 'react-native';
 import { ask, notify } from '../lib/dialog';
 import { router } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, tbl } from '../lib/supabase';
 import type { Patient } from '../lib/types';
 import { addMonths, isISODate, todayISO } from '../lib/dates';
 import { toNum } from '../lib/labs';
@@ -92,7 +92,7 @@ export function PatientForm({ existing }: { existing?: Patient }) {
     };
     setBusy(true);
     if (existing) {
-      const { error } = await supabase.from('patients').update(row).eq('id', existing.id);
+      const { error } = await supabase.from(tbl('patients')).update(row).eq('id', existing.id);
       setBusy(false);
       if (error) { notify('Could not save', error.message); return; }
       await uploadPending(existing.id);
@@ -101,7 +101,7 @@ export function PatientForm({ existing }: { existing?: Patient }) {
       const prefix = f.diagnostic_status === 'Confirmed' ? 'HD' : 'SUS';
       const { data: cr, error: idErr } = await supabase.rpc('next_study_id', { p_prefix: prefix });
       if (idErr) { setBusy(false); notify('Could not get a study number', idErr.message); return; }
-      const { data, error } = await supabase.from('patients')
+      const { data, error } = await supabase.from(tbl('patients'))
         .insert({ ...row, cr_no: cr, patient_status: prefix === 'HD' ? 'Active' : 'Awaiting Report' }).select('id').single();
       if (error) { setBusy(false); notify('Could not save', error.message); return; }
       await uploadPending(data.id);

@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { router, Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import { supabase } from '../../lib/supabase';
+import { supabase, tbl } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import type { Patient, Progress, Slot, Visit } from '../../lib/types';
 import { ask, notify } from '../../lib/dialog';
@@ -11,6 +11,8 @@ import { Btn, C, Card, Chip, ContactButtons, H, Muted, Screen, s, TONES } from '
 import { SlotStrip, slotSummary } from '../../components/SlotStrip';
 import { EnlCard } from '../../components/EnlCard';
 import { Gallery, ProfileAvatar } from '../../components/Gallery';
+import { GuestBanner, MembersOnly } from '../../components/Guest';
+import { Suggestions } from '../../components/Suggestions';
 
 const L = (v: Visit, k: string) => { const x = v[k]; return x === null || x === undefined ? '-' : String(x); };
 
@@ -25,7 +27,7 @@ function Info({ label, value }: { label: string; value: string }) {
 
 export default function PatientScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { role } = useSession();
+  const { role, guest } = useSession();
   const [p, setP] = useState<Patient | null>(null);
   const [prog, setProg] = useState<Progress | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
@@ -36,11 +38,11 @@ export default function PatientScreen() {
   const load = useCallback(async () => {
     setLoading(true);
     const [pt, pg, sl, vs] = await Promise.all([
-      supabase.from('patients').select('*').eq('id', id).single(),
-      supabase.from('v_patient_progress').select('*').eq('patient_id', id).maybeSingle(),
-      supabase.from('v_schedule').select('*').eq('patient_id', id).order('slot_month'),
+      supabase.from(tbl('patients')).select('*').eq('id', id).single(),
+      supabase.from(tbl('v_patient_progress')).select('*').eq('patient_id', id).maybeSingle(),
+      supabase.from(tbl('v_schedule')).select('*').eq('patient_id', id).order('slot_month'),
       // visits are fetched by this patient's own ID only
-      supabase.from('visits').select('*').eq('patient_id', id).is('deleted_at', null).order('visit_date', { ascending: false }),
+      supabase.from(tbl('visits')).select('*').eq('patient_id', id).is('deleted_at', null).order('visit_date', { ascending: false }),
     ]);
     setP(pt.data as Patient); setProg(pg.data as Progress); setSlots((sl.data ?? []) as Slot[]); setVisits((vs.data ?? []) as Visit[]);
     setLoading(false);
@@ -62,16 +64,17 @@ export default function PatientScreen() {
   return (
     <Screen refreshing={loading} onRefresh={load}>
       <Stack.Screen options={{ title: p.cr_no }} />
+      <GuestBanner compact />
       <Card>
         <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
           <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
             {p.mdt_status?.includes('Naive') ? <Chip text="Newly Diagnosed (Naive)" tone="good" big /> : <Chip text={p.mdt_status ?? 'MDT status?'} big />}
             {p.enl_developed ? <Chip text="ENL" tone="bad" big /> : null}
           </View>
-          <ProfileAvatar patientId={p.id} editable={canEdit(role)} refreshKey={tick} />
+          {guest ? null : <ProfileAvatar patientId={p.id} editable={canEdit(role)} refreshKey={tick} />}
         </View>
         <Text style={{ fontSize: 22, color: C.ink }}>
-          <Text style={{ fontWeight: '800' }}>Name: </Text>{p.patient_name} ({p.age ?? '?'}/{p.sex ?? '?'})
+          <Text style={{ fontWeight: '800' }}>Name: </Text>{guest ? '🔒 hidden' : p.patient_name} ({p.age ?? '?'}/{p.sex ?? '?'})
         </Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 }}>
           <Text style={{ fontSize: 18, fontWeight: '800', color: C.ink }}>Status:</Text>
@@ -79,7 +82,7 @@ export default function PatientScreen() {
         </View>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 12, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 6 }}>
           <Info label="Study no." value={p.cr_no} />
-          <Info label="UHID" value={p.uhid ?? '-'} />
+          <Info label="UHID" value={guest ? '🔒' : p.uhid ?? '-'} />
           <Info label="Spectrum" value={p.leprosy_spectrum ?? '-'} />
           <Info label="BI / MI" value={`${p.baseline_bi ?? '-'} / ${p.baseline_mi ?? '-'}`} />
           <Info label="Enrolled" value={fmt(p.enrollment_date)} />
@@ -88,7 +91,7 @@ export default function PatientScreen() {
           <Info label="BMI" value={String(p.bmi ?? '-')} />
         </View>
         <View style={[s.row, { marginTop: 10 }]}>
-          <Muted>{p.contact_no ?? 'No phone'}</Muted>
+          {guest ? <MembersOnly what="Phone and address" /> : <Muted>{p.contact_no ?? 'No phone'}</Muted>}
           <ContactButtons phone={p.contact_no} message={reminderText(p.patient_name, next?.due_date ?? null)} />
         </View>
         {canEdit(role) ? (
@@ -118,9 +121,14 @@ export default function PatientScreen() {
         </View>
       </Card>
 
+      <Btn kind="ghost" icon="📈" title="Trends: all parameters" onPress={() => router.push(`/patient/trends?id=${p.id}`)} />
+
       <EnlCard patientId={p.id} editable={canEdit(role)} refreshKey={tick} />
 
-      <Gallery patientId={p.id} editable={canEdit(role)} refreshKey={tick} consent={!!p.photo_consent} />
+      {guest ? <Card><H>Photos & documents</H><MembersOnly what="Photos, consent forms and reports" /></Card>
+        : <Gallery patientId={p.id} editable={canEdit(role)} refreshKey={tick} consent={!!p.photo_consent} />}
+
+      <Suggestions patientId={p.id} refreshKey={tick} />
 
       {canEdit(role) ? <Btn title="Add visit" icon="＋" onPress={() => router.push(`/visit/new?patient=${p.id}`)} /> : null}
 

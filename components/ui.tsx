@@ -120,7 +120,8 @@ export function PersonRow({ name, id, badge, badgeTone = 'good', sub, subColor, 
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [s.person, { opacity: pressed ? 0.85 : 1 }]}>
       <View style={{ flex: 1, paddingRight: 8 }}>
-        <Text style={{ fontSize: 16, color: C.ink }}><Text style={{ fontWeight: '800' }}>{name}</Text> ({id})</Text>
+        {/* visitors see the study number in place of the name */}
+        <Text style={{ fontSize: 16, color: C.ink }}><Text style={{ fontWeight: '800' }}>{name}</Text>{name === id ? '' : ` (${id})`}</Text>
         {badge ? <View style={{ marginTop: 4 }}><Chip text={badge} tone={badgeTone} big /></View> : null}
         {sub ? <Text style={{ color: subColor ?? C.quiet, marginTop: 3 }}>{sub}</Text> : null}
       </View>

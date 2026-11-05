@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { FlatList, RefreshControl, Text, TextInput, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { supabase } from '../../lib/supabase';
+import { supabase, tbl } from '../../lib/supabase';
 import type { Progress } from '../../lib/types';
 import { reminderText } from '../../lib/messages';
 import { fmt } from '../../lib/dates';
@@ -18,8 +18,8 @@ export default function Patients() {
   const load = useCallback(async () => {
     setLoading(true);
     const [prog, pts] = await Promise.all([
-      supabase.from('v_patient_progress').select('*'),
-      supabase.from('patients').select('id, uhid, contact_no, patient_status, enl_developed').is('deleted_at', null),
+      supabase.from(tbl('v_patient_progress')).select('*'),
+      supabase.from(tbl('patients')).select('id, uhid, contact_no, patient_status, enl_developed').is('deleted_at', null),
     ]);
     const extra = new Map((pts.data ?? []).map((p: any) => [p.id, p]));
     const merged = ((prog.data ?? []) as Progress[]).map(r => ({ ...r, ...(extra.get(r.patient_id) ?? {}) })) as Row[];

@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Switch, Text, View } from 'react-native';
 import { Stack, useFocusEffect } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase, tbl } from '../lib/supabase';
 import { useSession } from '../lib/session';
 import { ask, notify } from '../lib/dialog';
 import { toNum } from '../lib/labs';
@@ -25,7 +25,7 @@ export default function Team() {
   const load = useCallback(async () => {
     const [m, st] = await Promise.all([
       supabase.from('members').select('*').order('invited_at'),
-      supabase.from('study_settings').select('*').order('key'),
+      supabase.from(tbl('study_settings')).select('*').order('key'),
     ]);
     setMembers((m.data ?? []) as Member[]); setSettings((st.data ?? []) as Setting[]);
   }, []);
@@ -54,7 +54,7 @@ export default function Team() {
   async function saveSetting(st: Setting) {
     const v = toNum(edits[st.key]);
     if (v == null || v < 0) { notify('Check the value', 'Enter a number.'); return; }
-    const { error } = await supabase.from('study_settings').update({ value: v }).eq('key', st.key);
+    const { error } = await supabase.from(tbl('study_settings')).update({ value: v }).eq('key', st.key);
     if (error) notify('Could not save', error.message); else { setEdits(prev => { const n = { ...prev }; delete n[st.key]; return n; }); load(); }
   }
 
@@ -97,10 +97,23 @@ export default function Team() {
         </Card>
       ) : null}
 
+      {owner ? (
+        <Card>
+          <H>Public view-only link</H>
+          <View style={s.row}>
+            <Text style={{ color: C.ink, fontWeight: '600', flex: 1 }}>Anyone with the link can browse de-identified data</Text>
+            <Switch value={(settings.find(x => x.key === 'public_view')?.value ?? 0) === 1}
+              onValueChange={async v => { const { error } = await supabase.from('study_settings').update({ value: v ? 1 : 0 }).eq('key', 'public_view');
+                if (error) notify('Could not save', error.message); else load(); }} />
+          </View>
+          <Muted>Visitors see study numbers, clinical data, labs, schedules and graphs. Names, phone numbers, address, UHID, notes and photos stay hidden until someone logs in. Switch off to show visitors nothing.</Muted>
+        </Card>
+      ) : null}
+
       <Card>
         <H>Study thresholds</H>
         <Muted>Used for the ESS band and the steroid flags. Agree these with your guide.</Muted>
-        {settings.map(st => (
+        {settings.filter(st => st.key !== 'public_view').map(st => (
           <View key={st.key} style={{ borderTopWidth: 1, borderTopColor: C.line, paddingVertical: 8, marginTop: 6 }}>
             <Text style={{ color: C.ink, fontWeight: '600' }}>{st.note}</Text>
             {owner ? (
