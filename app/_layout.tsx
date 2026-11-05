@@ -19,6 +19,7 @@ function Gate() {
       <Stack.Screen name="patient/new" options={{ title: 'Enrol patient' }} />
       <Stack.Screen name="patient/edit" options={{ title: 'Edit patient' }} />
       <Stack.Screen name="visit/[id]" options={{ title: 'Visit' }} />
+      <Stack.Screen name="team" options={{ title: 'Team & settings' }} />
     </Stack>
   );
 }

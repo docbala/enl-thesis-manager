@@ -8,6 +8,8 @@ import type { Patient, Slot, Visit } from '../../lib/types';
 import { ALL_LAB_FIELDS, hba1cDue, LAB_GROUPS, LabKey, outOfRange, ratios, toNum } from '../../lib/labs';
 import { fmt, isISODate, todayISO } from '../../lib/dates';
 import { Btn, C, Card, Choice, Field, H, Muted, s, page } from '../../components/ui';
+import { EssForm } from '../../components/EssForm';
+import { ESS_ITEMS, EssScores, essScored, essTotal } from '../../lib/ess';
 
 type Lab = Record<LabKey, string>;
 const emptyLabs = () => Object.fromEntries(ALL_LAB_FIELDS.map(f => [f.key, ''])) as Lab;
@@ -31,7 +33,8 @@ export default function VisitScreen() {
   const [kind, setKind] = useState<'Scheduled' | 'Baseline' | 'Unscheduled'>('Scheduled');
   const [labs, setLabs] = useState<Lab>(emptyLabs());
   const [enl, setEnl] = useState(false);
-  const [ess, setEss] = useState('');
+  const [ess, setEss] = useState<EssScores>({});
+  const [oldEss, setOldEss] = useState<number | null>(null);   // a score saved with the old app's questionnaire
   const [pred, setPred] = useState('');
   const [weight, setWeight] = useState('');
   const [notes, setNotes] = useState('');
@@ -47,7 +50,10 @@ export default function VisitScreen() {
         setKind(v.visit_type === 'Baseline Visit' ? 'Baseline' : v.is_unscheduled || !v.visit_type.startsWith('Month') ? 'Unscheduled' : 'Scheduled');
         setLabs(Object.fromEntries(ALL_LAB_FIELDS.map(f => [f.key,
           f.key === 'vit_b12' && v.vit_b12_flag ? v.vit_b12_flag + str(v.vit_b12) : str(v[f.key])])) as Lab);
-        setEnl(!!v.enl_reaction); setEss(str(v.ess_score)); setPred(str(v.prednisolone_mg));
+        setEnl(!!v.enl_reaction); setPred(str(v.prednisolone_mg));
+        const { data: a } = await supabase.from('ess_assessments').select('*').eq('visit_id', v.id).maybeSingle();
+        if (a) setEss(Object.fromEntries(ESS_ITEMS.map(i => [i.key, (a as any)[i.key]])) as EssScores);
+        else if (v.ess_score != null) setOldEss(Number(v.ess_score));
         setWeight(str(v.weight_kg)); setNotes(v.clinical_notes && v.clinical_notes !== 'Verified & Saved' ? v.clinical_notes : '');
       }
       if (!pid) return;
@@ -81,8 +87,7 @@ export default function VisitScreen() {
     if (date > todayISO()) problems.push('Date cannot be in the future.');
     if (!visitType) problems.push(`No follow-up month is open on ${fmt(date)}. Save it as Unscheduled, or check the date.`);
     if (slotTaken) problems.push(`Month ${slot!.slot_month} already has a visit (${fmt(slot!.visit_date)}). Save this one as Unscheduled.`);
-    const essN = toNum(ess);
-    if (enl && essN != null && (essN < 0 || essN > 30)) problems.push('ESS total must be 0–30.');
+    const scored = essScored(ess);
     for (const f of ALL_LAB_FIELDS) {
       const raw = labs[f.key].trim();
       if (raw && toNum(raw.replace(/^[<>]/, '')) == null) problems.push(`${f.label}: "${raw}" is not a number.`);
@@ -94,18 +99,25 @@ export default function VisitScreen() {
       const b12raw = labs.vit_b12.trim();
       const row: Record<string, unknown> = {
         patient_id: p.id, visit_type: visitType, visit_date: date, is_unscheduled: kind === 'Unscheduled',
-        enl_reaction: enl, ess_score: enl ? essN : null, prednisolone_mg: toNum(pred), weight_kg: toNum(weight),
+        enl_reaction: enl, ...(enl ? {} : { ess_score: null }), prednisolone_mg: toNum(pred), weight_kg: toNum(weight),
         clinical_notes: notes.trim() || null,
         ...Object.fromEntries(ALL_LAB_FIELDS.filter(f => f.key !== 'vit_b12').map(f => [f.key, nums[f.key] ?? null])),
         vit_b12: nums.vit_b12 ?? null, vit_b12_flag: /^[<>]/.test(b12raw) ? b12raw[0] : null,
       };
       setBusy(true);
       const res = visit
-        ? await supabase.from('visits').update(row).eq('id', visit.id)
-        : await supabase.from('visits').insert(row);
-      if (!res.error && enl && !p.enl_developed) await supabase.from('patients').update({ enl_developed: true }).eq('id', p.id);
+        ? await supabase.from('visits').update(row).eq('id', visit.id).select('id').single()
+        : await supabase.from('visits').insert(row).select('id').single();
+      if (res.error) { setBusy(false); notify('Could not save', res.error.message); return; }
+      // ENLIST ESS items; the database copies the total to the visit and opens an ENL episode if needed
+      if (enl && scored) {
+        const e = await supabase.from('ess_assessments').upsert({ visit_id: res.data.id, patient_id: p.id,
+          ...Object.fromEntries(ESS_ITEMS.map(i => [i.key, ess[i.key] ?? null])) }, { onConflict: 'visit_id' });
+        if (e.error) { setBusy(false); notify('Visit saved, but the ESS was not', e.error.message); return; }
+      } else if (!enl && visit) {
+        await supabase.from('ess_assessments').delete().eq('visit_id', visit.id);
+      }
       setBusy(false);
-      if (res.error) { notify('Could not save', res.error.message); return; }
       router.back();
     };
     if (warn.length) {
@@ -152,8 +164,10 @@ export default function VisitScreen() {
             <Text style={{ color: C.ink, fontWeight: '600' }}>ENL present</Text>
             <Switch value={enl} onValueChange={setEnl} disabled={!editable} />
           </View>
-          {enl ? <Field label="ESS total (ENLIST)" unit="0–30" keyboardType="decimal-pad" value={ess} onChangeText={setEss} editable={editable} /> : null}
-          {enl ? <Muted>Item-by-item ESS scoring comes in Phase 2.</Muted> : null}
+          {enl && oldEss != null && !essScored(ess) ? (
+            <Muted>ESS {oldEss} was recorded with the old app's questionnaire (not the ENLIST items). Score the 10 items below to replace it.</Muted>
+          ) : null}
+          {enl ? <View style={{ marginTop: 8 }}><EssForm value={ess} onChange={setEss} editable={editable} /></View> : null}
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
             <View style={{ flex: 1 }}><Field label="Prednisolone today" unit="mg/day" keyboardType="decimal-pad" value={pred} onChangeText={setPred} editable={editable} /></View>
             <View style={{ flex: 1 }}><Field label="Weight" unit="kg" keyboardType="decimal-pad" value={weight} onChangeText={setWeight} editable={editable} /></View>

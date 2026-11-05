@@ -16,6 +16,8 @@ const TARGET_PATIENTS = 100;
 const TARGET_VISITS = 1200;   // 100 patients × 12 follow-up months
 
 type LastVisit = { patient_id: string; visit_type: string; visit_date: string };
+type SteroidFlag = { patient_id: string; cr_no: string; patient_name: string; taper_relapses: number; stop_relapses: number;
+  steroid_dependent: boolean; possible_nonresponder: boolean; current_mg: number | null };
 
 export default function Dashboard() {
   const { role, session } = useSession();
@@ -26,12 +28,13 @@ export default function Dashboard() {
   const [toReview, setToReview] = useState(0);
   const [pendingSync, setPendingSync] = useState<number | null>(null);
   const [canExport, setCanExport] = useState(false);
+  const [flags, setFlags] = useState<SteroidFlag[]>([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [pt, pg, sl, vs, rv, sq, me] = await Promise.all([
+    const [pt, pg, sl, vs, rv, sq, me, fl] = await Promise.all([
       supabase.from('patients').select('*').is('deleted_at', null),
       supabase.from('v_patient_progress').select('*'),
       supabase.from('v_schedule').select('*'),
@@ -39,7 +42,10 @@ export default function Dashboard() {
       supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }),
       supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null),
       supabase.from('members').select('can_export').eq('user_id', session?.user.id ?? '').maybeSingle(),
+      supabase.from('v_steroid_flags').select('*'),
     ]);
+    setFlags(((fl.data ?? []) as SteroidFlag[]).filter(f => f.steroid_dependent || f.possible_nonresponder || f.taper_relapses > 0 || f.stop_relapses > 0)
+      .sort((a, b) => a.cr_no.localeCompare(b.cr_no)));
     setPatients((pt.data ?? []) as Patient[]);
     setProgress((pg.data ?? []) as Progress[]);
     setSlots((sl.data ?? []) as Slot[]);
@@ -199,7 +205,19 @@ export default function Dashboard() {
             right={<ContactButtons phone={r.p.contact_no} sms={false} message={reminderText(r.p.patient_name, view.sat)} />} />
         )} />
 
+      <Section title="Steroid Response Flags" icon="💊" tone="pink" items={flags} keyOf={f => f.patient_id}
+        empty="No relapse during taper, dependence or possible non-response flagged."
+        render={f => (
+          <PersonRow name={f.patient_name} id={f.cr_no} subColor={TONES.pink.title}
+            sub={[f.steroid_dependent ? 'Steroid dependent' : f.taper_relapses ? `Relapse during taper ×${f.taper_relapses}` : null,
+                  f.stop_relapses ? `Relapse after stopping ×${f.stop_relapses}` : null,
+                  f.possible_nonresponder ? 'Possible non-response' : null,
+                  f.current_mg != null ? `now ${f.current_mg} mg/day` : null].filter(Boolean).join(' · ')}
+            onPress={() => router.push(`/patient/${f.patient_id}`)} />
+        )} />
+
       {canExport ? <Btn kind="export" icon="📥" title="Export Master Dataset" busy={exporting} onPress={doExport} /> : null}
+      {role === 'owner' ? <Btn kind="ghost" title="Team & settings" icon="👥" onPress={() => router.push('/team')} /> : null}
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
         {pendingSync !== null ? <Chip text={`Sheet copy: ${pendingSync} waiting`} tone={pendingSync ? 'warn' : 'good'} /> : <View />}

@@ -9,6 +9,7 @@ import { reminderText } from '../../lib/messages';
 import { fmt } from '../../lib/dates';
 import { Btn, C, Card, Chip, ContactButtons, H, Muted, Screen, s, TONES } from '../../components/ui';
 import { SlotStrip, slotSummary } from '../../components/SlotStrip';
+import { EnlCard } from '../../components/EnlCard';
 
 const L = (v: Visit, k: string) => { const x = v[k]; return x === null || x === undefined ? '-' : String(x); };
 
@@ -29,6 +30,7 @@ export default function PatientScreen() {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [visits, setVisits] = useState<Visit[]>([]);
   const [loading, setLoading] = useState(false);
+  const [tick, setTick] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -41,6 +43,7 @@ export default function PatientScreen() {
     ]);
     setP(pt.data as Patient); setProg(pg.data as Progress); setSlots((sl.data ?? []) as Slot[]); setVisits((vs.data ?? []) as Visit[]);
     setLoading(false);
+    setTick(t => t + 1);
   }, [id]);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -110,6 +113,8 @@ export default function PatientScreen() {
           {prog?.ltfu_flag ? <Text style={{ color: C.bad, marginTop: 6, fontWeight: '700' }}>3 or more visits missed in a row: review lost-to-follow-up status.</Text> : null}
         </View>
       </Card>
+
+      <EnlCard patientId={p.id} editable={canEdit(role)} refreshKey={tick} />
 
       {canEdit(role) ? <Btn title="Add visit" icon="＋" onPress={() => router.push(`/visit/new?patient=${p.id}`)} /> : null}
 

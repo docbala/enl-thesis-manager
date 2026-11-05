@@ -44,7 +44,21 @@ var V_COLS = ['visit_id', 'cr_no', 'visit_type', 'visit_date', 'hb', 'tlc', 'gra
   'nlr', 'plr', 'total_protein', 'albumin', 'globulin', 'agr', 'vit_d3', 'vit_b12', 'uric_acid', 'creatinine', 'sgot', 'sgpt',
   'alp', 'esr', 'crp', 'enl_reaction', 'ess_score', 'clinical_notes', 'report_url', 'urea', 'hba1c'];   // 30 columns = A..AD
 var V_DATES = { visit_date: 1 };
-var V_APP = ['APP_Visit_UUID', 'APP_Unscheduled', 'APP_Prednisolone_mg', 'APP_Weight_kg', 'APP_Synced_At', 'APP_Deleted'];
+var V_APP = ['APP_Visit_UUID', 'APP_Unscheduled', 'APP_Prednisolone_mg', 'APP_Weight_kg', 'APP_Synced_At', 'APP_Deleted', 'APP_ESS_Items', 'APP_ESS_Band'];
+
+// New data from the app gets its own tabs (the old app never reads them). Column: [header, field].
+var ESS_KEYS = ['pain', 'fever', 'lesion_number', 'lesion_inflammation', 'lesion_extent', 'peripheral_oedema', 'bone_pain',
+  'joint_inflammation', 'lymphadenopathy', 'nerve_tenderness'];
+var APP_TABS = {
+  enl_episodes: { tab: 'APP_ENL_Episodes', cols: [['ID', 'id'], ['CR_No', 'cr_no'], ['Onset_Date', 'onset_date'], ['End_Date', 'end_date'],
+    ['Suggested_Type', 'suggested_type'], ['Days', 'days'], ['Trigger', 'trigger_cause'], ['Notes', 'notes']] },
+  drug_doses: { tab: 'APP_Drug_Doses', cols: [['ID', 'id'], ['CR_No', 'cr_no'], ['Drug', 'drug'], ['From_Date', 'start_date'],
+    ['mg_per_day', 'mg_per_day'], ['Recorded_At_Visit', 'source_visit'], ['Note', 'note']] },
+  ess_assessments: { tab: 'APP_ESS_Items', cols: [['ID', 'id'], ['CR_No', 'cr_no'], ['Visit_ID', 'visit_code'], ['Visit_Date', 'visit_date']]
+    .concat(ESS_KEYS.map(function (k) { return ['ESS_' + k, k]; }))
+    .concat([['ESS_Total', 'total'], ['Items_Scored', 'items_scored'], ['Scale', 'scale_version']]) },
+};
+var APP_TAB_DATES = { onset_date: 1, end_date: 1, start_date: 1, visit_date: 1 };
 
 // ---------------------------------------------------------------- setup
 
@@ -89,8 +103,9 @@ function syncNow() {
       for (var i = 0; i < items.length; i++) {
         var it = items[i];
         try {
-          if (!it.row) { rpc_('sheet_ack', { p_secret: CFG.SYNC_SECRET, p_ids: it.queue_ids }); continue; }
-          if (it.table === 'patients') writePatient_(pSheet, pIdx, it.row);
+          if (APP_TABS[it.table]) writeAppTab_(ss, it.table, it.record_id, it.row);      // row is null when deleted in the app
+          else if (!it.row) { rpc_('sheet_ack', { p_secret: CFG.SYNC_SECRET, p_ids: it.queue_ids }); continue; }
+          else if (it.table === 'patients') writePatient_(pSheet, pIdx, it.row);
           else writeVisit_(vSheet, vIdx, it.row);
           SpreadsheetApp.flush();                                   // surfaces any refused write before it is marked done
           rpc_('sheet_ack', { p_secret: CFG.SYNC_SECRET, p_ids: it.queue_ids });
@@ -228,7 +243,9 @@ function writeVisit_(sheet, idx, v) {
   var row = findVisitRow(idx, v);
   var vals = toVisitRow(v);
   var app = { APP_Visit_UUID: v.id, APP_Unscheduled: v.is_unscheduled ? 'Y' : 'N', APP_Prednisolone_mg: v.prednisolone_mg,
-    APP_Weight_kg: v.weight_kg, APP_Synced_At: new Date(), APP_Deleted: v.deleted_at ? 'Deleted in app' : '' };
+    APP_Weight_kg: v.weight_kg, APP_Synced_At: new Date(), APP_Deleted: v.deleted_at ? 'Deleted in app' : '',
+    APP_ESS_Items: v.ess_items ? ESS_KEYS.map(function (k) { var x = v.ess_items[k]; return x === null || x === undefined ? '-' : x; }).join(',') : '',
+    APP_ESS_Band: v.ess_items ? (v.ess_items.total >= 9 ? 'Moderate-severe (>=9)' : 'Mild (<9)') : '' };
   if (row) {
     if (!v.deleted_at) sheet.getRange(row, 1, 1, vals.length).setValues([vals]);   // a deleted visit keeps its old values
   } else {
@@ -238,6 +255,28 @@ function writeVisit_(sheet, idx, v) {
     idx.data.push(sheet.getRange(row, 1, 1, idx.width).getValues()[0]);
   }
   writeApp_(sheet, idx, row, app);
+}
+
+function writeAppTab_(ss, table, recordId, row) {
+  var def = APP_TABS[table];
+  var sh = ss.getSheetByName(def.tab);
+  var header = def.cols.map(function (c) { return c[0]; }).concat(['Synced_At']);
+  if (!sh) {
+    sh = ss.insertSheet(def.tab);
+    sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#FFF2CC');
+    sh.setFrozenRows(1);
+  }
+  var last = sh.getLastRow();
+  var ids = last > 1 ? sh.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return String(r[0]); }) : [];
+  var at = ids.indexOf(String(recordId));
+  if (!row) { if (at >= 0) sh.deleteRow(at + 2); return; }                   // removed in the app
+  var vals = def.cols.map(function (c) {
+    var x = row[c[1]];
+    if (APP_TAB_DATES[c[1]]) return asDate_(x);
+    return x === null || x === undefined ? '' : x;
+  }).concat([new Date()]);
+  if (at >= 0) sh.getRange(at + 2, 1, 1, vals.length).setValues([vals]);
+  else sh.appendRow(vals);
 }
 
 // ---------------------------------------------------------------- pure helpers (also tested outside Apps Script)
