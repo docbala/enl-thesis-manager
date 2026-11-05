@@ -9,8 +9,8 @@ import { toNum } from '../lib/labs';
 import { Btn, C, Card, Choice, Field, H, Muted, page } from './ui';
 
 const SEX = ['Male', 'Female', 'Other'] as const;
-const SPECTRUM = ['LL', 'BL', 'BB', 'BT', 'TT'] as const;
-const MDT = ['Newly Diagnosed (Naive)', 'On MDT'] as const;
+const SPECTRUM = ['LL', 'BL', 'BB', 'BT', 'TT', 'PN'] as const;
+const MDT = ['Newly Diagnosed (Naive)', 'On MDT', 'Completed MDT'] as const;
 const DIAG = ['Confirmed', 'Awaiting Biopsy Report', 'Awaiting SSS Report'] as const;
 const FAMILY = ['No Leprosy in Family', 'Leprosy in Family (MB)', 'Leprosy in Family (PB)'] as const;
 const SES = ['Class I (Upper)', 'Class II (Upper Middle)', 'Class III (Lower Middle)', 'Class IV (Upper Lower)', 'Class V (Lower)'] as const;
