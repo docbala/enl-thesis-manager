@@ -2,6 +2,9 @@
  * ENL Thesis Manager: copy-back to the Google Sheet + weekly backup.
  *
  * This is a SEPARATE Apps Script project. It does not change the old Thesis Manager script.
+ * Every 10 minutes it (1) copies changes made in the new app into the sheet, then (2) sends rows that were
+ * added or changed in the OLD app to the new app. The database cleans them with the same rules as the import,
+ * applies only real differences, and puts records changed in both apps on the Review tab instead of overwriting.
  * It only writes:
  *   - the old app's own columns (A..AG in Patient_Master, A..AD in Longitudinal_Visits), in the same format,
  *     for records that were added or changed in the new app;
@@ -98,11 +101,110 @@ function syncNow() {
       }
       SpreadsheetApp.flush();
     }
+    pullFromSheet_(pSheet, 'patients', P_COLS.length, 'APP_Patient_UUID');
+    pullFromSheet_(vSheet, 'visits', V_COLS.length, 'APP_Visit_UUID');
   } finally {
     lock.releaseLock();
   }
   return done;
 }
+
+// ---------------------------------------------------------------- old app -> new app
+
+// Sends rows that are new or changed since the last run. The first run sends every row; the database
+// ignores rows that already match, so nothing it corrected during the import is undone.
+function pullFromSheet_(sheet, kind, baseCols, uuidHeader) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  var width = Math.max(sheet.getLastColumn(), baseCols);
+  var all = sheet.getRange(1, 1, lastRow, width).getValues();
+  var header = all[0].map(String);
+  var uCol = header.indexOf(uuidHeader);
+  var rows = readRows_(all, header, baseCols, uCol, kind);
+  var snap = loadSnap_(kind), next = {}, send = [];
+  rows.forEach(function (r) {
+    next[r.key] = r.hash;
+    if (snap[r.key] !== r.hash) send.push(r);
+  });
+  var failed = {}, summary = { inserted: 0, updated: 0, conflicts: 0, unchanged: 0, errors: [] };
+  for (var i = 0; i < send.length; i += 100) {
+    var chunk = send.slice(i, i + 100).map(function (r) { return { row: r.row, nth: r.nth, uuid: r.uuid, values: r.values }; });
+    var res = rpc_('sheet_push', { p_secret: CFG.SYNC_SECRET, p_kind: kind, p_rows: chunk });
+    ['inserted', 'updated', 'conflicts', 'unchanged'].forEach(function (k) { summary[k] += res[k] || 0; });
+    (res.errors || []).forEach(function (e) { failed[String(e.row)] = 1; summary.errors.push(e); });
+  }
+  // rows that failed are retried next time; rows that left the sheet are flagged for review (never deleted)
+  var failedKeys = failedKeys_(rows, failed);
+  rows.forEach(function (r) { if (failed[String(r.row)]) delete next[r.key]; });
+  var gone = Object.keys(snap).filter(function (k) { return !(k in next) && !(k in failedKeys); });
+  if (Object.keys(snap).length && rows.length < Object.keys(snap).length * 0.5) {
+    Logger.log('%s: sheet returned far fewer rows than last time (%s vs %s); not reporting removals this run.', kind, rows.length, Object.keys(snap).length);
+    gone = [];
+  }
+  if (gone.length) {
+    rpc_('sheet_removed', { p_secret: CFG.SYNC_SECRET, p_kind: kind, p_keys: gone.map(function (k) {
+      var m = k.split('#'); return { key: m[0], nth: Number(m[1] || 1), uuid: null };
+    }) });
+  }
+  saveSnap_(kind, next);
+  if (send.length) Logger.log('%s from old app: %s', kind, JSON.stringify(summary));
+}
+
+function failedKeys_(rows, failed) {
+  var out = {};
+  rows.forEach(function (r) { if (failed[String(r.row)]) out[r.key] = 1; });
+  return out;
+}
+
+// One entry per filled row: values keyed by the sheet's own header names (old columns only).
+function readRows_(all, header, baseCols, uCol, kind) {
+  var out = [], seen = {};
+  for (var i = 1; i < all.length; i++) {
+    var raw = all[i].slice(0, baseCols);
+    if (raw.every(function (x) { return x === '' || x === null; })) continue;
+    var values = {};
+    for (var c = 0; c < baseCols; c++) {
+      var x = raw[c];
+      if (x instanceof Date) x = Utilities.formatDate(x, 'Asia/Kolkata', 'yyyy-MM-dd');
+      values[header[c]] = x === '' ? null : x;
+    }
+    var id = String(raw[0]).trim();
+    if (!id) continue;
+    seen[id] = (seen[id] || 0) + 1;
+    var nth = seen[id];
+    var key = kind === 'patients' ? id : id + '#' + nth;
+    var json = JSON.stringify(values);
+    var hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, json));
+    out.push({ row: i + 1, nth: nth, key: key, hash: hash, values: values, uuid: uCol >= 0 && all[i][uCol] ? String(all[i][uCol]) : null });
+  }
+  return out;
+}
+
+// Row fingerprints are kept in this script's properties, split into small chunks.
+function loadSnap_(kind) {
+  var props = PropertiesService.getScriptProperties(), n = Number(props.getProperty('SNAP_' + kind + '_N') || 0), map = {};
+  for (var i = 0; i < n; i++) {
+    var part = props.getProperty('SNAP_' + kind + '_' + i);
+    if (part) { var o = JSON.parse(part); for (var k in o) map[k] = o[k]; }
+  }
+  return map;
+}
+
+function saveSnap_(kind, map) {
+  var props = PropertiesService.getScriptProperties(), keys = Object.keys(map), old = Number(props.getProperty('SNAP_' + kind + '_N') || 0);
+  var parts = {}, n = 0;
+  for (var i = 0; i < keys.length; i += 100) {
+    var o = {};
+    keys.slice(i, i + 100).forEach(function (k) { o[k] = map[k]; });
+    parts['SNAP_' + kind + '_' + n] = JSON.stringify(o); n++;
+  }
+  parts['SNAP_' + kind + '_N'] = String(n);
+  props.setProperties(parts);
+  for (var j = n; j < old; j++) props.deleteProperty('SNAP_' + kind + '_' + j);
+}
+
+// Run by hand to send old-app changes right away.
+function pullNow() { syncNow(); }
 
 function writePatient_(sheet, idx, p) {
   var row = findPatientRow_(idx, p);
