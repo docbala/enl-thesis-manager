@@ -140,14 +140,14 @@ export function RoundBtn({ icon, color, onPress, filled, label }: { icon: keyof 
   );
 }
 
-export function ContactButtons({ phone, message, sms = true }: { phone: string | null; message: string; sms?: boolean }) {
+export function ContactButtons({ phone, message, sms = true, onSent }: { phone: string | null; message: string; sms?: boolean; onSent?: (channel: 'call' | 'sms' | 'whatsapp') => void }) {
   const p = (phone ?? '').replace(/\D/g, '').slice(-10);
   if (!p) return null;
   return (
     <View style={{ flexDirection: 'row', gap: 8 }}>
-      <RoundBtn label="Call" icon="phone" color={C.call} onPress={() => Linking.openURL(`tel:${p}`)} />
-      {sms ? <RoundBtn label="SMS" icon="email" color={C.sms} onPress={() => Linking.openURL(`sms:${p}?body=${encodeURIComponent(message)}`)} /> : null}
-      <RoundBtn label="WhatsApp" icon="whatsapp" color={C.whatsapp} filled onPress={() => Linking.openURL(`https://wa.me/91${p}?text=${encodeURIComponent(message)}`)} />
+      <RoundBtn label="Call" icon="phone" color={C.call} onPress={() => { onSent?.('call'); Linking.openURL(`tel:${p}`); }} />
+      {sms ? <RoundBtn label="SMS" icon="email" color={C.sms} onPress={() => { onSent?.('sms'); Linking.openURL(`sms:${p}?body=${encodeURIComponent(message)}`); }} /> : null}
+      <RoundBtn label="WhatsApp" icon="whatsapp" color={C.whatsapp} filled onPress={() => { onSent?.('whatsapp'); Linking.openURL(`https://wa.me/91${p}?text=${encodeURIComponent(message)}`); }} />
     </View>
   );
 }

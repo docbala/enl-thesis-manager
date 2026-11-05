@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { clearDraft, loadDraft, saveDraft } from '../../lib/offline';
 import { KeyboardAvoidingView, Linking, Platform, ScrollView, Switch, Text, View } from 'react-native';
 import { ask, notify } from '../../lib/dialog';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
@@ -46,6 +47,7 @@ export default function VisitScreen() {
   const [weight, setWeight] = useState('');
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
   const [pending, setPending] = useState<Pending[]>([]);
   const [saved, setSaved] = useState<Photo[]>([]);
   const [site, setSite] = useState<string>('Face');
@@ -79,8 +81,32 @@ export default function VisitScreen() {
       ]);
       setP(pt.data as Patient); setSlots((sl.data ?? []) as Slot[]);
       if (isNew && (vs.data ?? []).length === 0) setKind('Baseline');
+      setReady(true);
     })();
   }, [id, patient]);
+
+  // Draft: whatever is typed is kept on this device until the visit is saved.
+  const draftKey = `visit:${isNew ? 'new:' + patient : id}`;
+  const form = { date, kind, labs, enl, ess, pred, weight, notes };
+  const initial = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready || !editable) return;
+    const snap = JSON.stringify(form);
+    if (initial.current === null) {
+      initial.current = snap;
+      loadDraft<typeof form>(draftKey).then(async d => {
+        if (!d || JSON.stringify(d.value) === snap) return;
+        const when = new Date(d.at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+        if (await ask('Unsaved draft found', `You typed changes on ${when} that were not saved. Restore them?`, 'Restore')) {
+          const v = d.value;
+          setDate(v.date); setKind(v.kind); setLabs(v.labs); setEnl(v.enl); setEss(v.ess); setPred(v.pred); setWeight(v.weight); setNotes(v.notes);
+        } else clearDraft(draftKey);
+      });
+      return;
+    }
+    const h = setTimeout(() => { snap === initial.current ? clearDraft(draftKey) : saveDraft(draftKey, form); }, 500);
+    return () => clearTimeout(h);
+  }, [ready, date, kind, labs, enl, ess, pred, weight, notes]);
 
   const savedUrls = useSignedUrls(saved.filter(x => x.mime_type !== 'application/pdf').map(x => x.storage_path));
 
@@ -153,7 +179,7 @@ export default function VisitScreen() {
       const res = visit
         ? await supabase.from(tbl('visits')).update(row).eq('id', visit.id).select('id').single()
         : await supabase.from(tbl('visits')).insert(row).select('id').single();
-      if (res.error) { setBusy(false); notify('Could not save', res.error.message); return; }
+      if (res.error) { setBusy(false); notify('Could not save', `${res.error.message}\n\nYour entries are kept as a draft on this device.`); return; }
       // ENLIST ESS items; the database copies the total to the visit and opens an ENL episode if needed
       if (enl && scored) {
         const e = await supabase.from(tbl('ess_assessments')).upsert({ visit_id: res.data.id, patient_id: p.id,
@@ -169,6 +195,7 @@ export default function VisitScreen() {
       }
       setBusy(false);
       if (failed.length) notify('Visit saved, but some files did not upload', failed.join('\n'));
+      await clearDraft(draftKey);
       router.back();
     };
     if (warn.length) {

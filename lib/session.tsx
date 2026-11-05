@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getMyRole, Role, setGuest, supabase } from './supabase';
+import { clearOffline } from './offline';
 
 type Ctx = { session: Session | null; role: Role | null; loading: boolean; guest: boolean; refreshRole: () => Promise<void> };
 const SessionCtx = createContext<Ctx>({ session: null, role: null, loading: true, guest: true, refreshRole: async () => {} });
@@ -18,7 +19,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       if (data.session) await refreshRole();
       setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (e, s) => {
+      if (e === 'SIGNED_OUT') clearOffline();   // a shared phone keeps no member data after sign-out
       setGuest(!s); setSession(s);
       if (s) await refreshRole(); else setRole(null);
     });

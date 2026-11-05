@@ -4,6 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { supabase, tbl } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import { GuestBanner } from '../../components/Guest';
+import { exportAnalysisBundle } from '../../lib/analysisExport';
 import type { Patient, Progress, Slot } from '../../lib/types';
 import { ask, notify } from '../../lib/dialog';
 import { comingSaturday, reminderText } from '../../lib/messages';
@@ -32,10 +33,12 @@ export default function Dashboard() {
   const [flags, setFlags] = useState<SteroidFlag[]>([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [bundling, setBundling] = useState(false);
+  const [reminded, setReminded] = useState<Map<string, string>>(new Map());   // patient -> channel, last 7 days
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [pt, pg, sl, vs, rv, sq, me, fl] = await Promise.all([
+    const [pt, pg, sl, vs, rv, sq, me, rm, fl] = await Promise.all([
       supabase.from(tbl('patients')).select('*').is('deleted_at', null),
       supabase.from(tbl('v_patient_progress')).select('*'),
       supabase.from(tbl('v_schedule')).select('*'),
@@ -43,6 +46,7 @@ export default function Dashboard() {
       session ? supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }) : Promise.resolve({ count: 0 } as any),
       session ? supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null) : Promise.resolve({ error: true } as any),
       session ? supabase.from('members').select('can_export').eq('user_id', session.user.id).maybeSingle() : Promise.resolve({ data: null } as any),
+      session ? supabase.from('reminder_log').select('patient_id, channel, sent_at').gt('sent_at', new Date(Date.now() - 7 * 86400000).toISOString()).order('sent_at') : Promise.resolve({ data: [] } as any),
       supabase.from(tbl('v_steroid_flags')).select('*'),
     ]);
     setFlags(((fl.data ?? []) as SteroidFlag[]).filter(f => f.steroid_dependent || f.possible_nonresponder || f.taper_relapses > 0 || f.stop_relapses > 0)
@@ -56,6 +60,7 @@ export default function Dashboard() {
     setToReview(rv.count ?? 0);
     setPendingSync(sq.error ? null : sq.count ?? 0);
     setCanExport(!!me.data?.can_export);
+    setReminded(new Map(((rm.data ?? []) as { patient_id: string; channel: string }[]).map(r => [r.patient_id, r.channel])));
     setLoading(false);
   }, [session?.user.id]);
 
@@ -110,6 +115,19 @@ export default function Dashboard() {
     if (!(await ask('Confirm report?', `${p.patient_name} (${p.cr_no}) will be marked Confirmed and get the next HD number.`, 'Confirm'))) return;
     const { data, error } = await supabase.rpc('confirm_suspected', { p_patient: p.id });
     if (error) notify('Could not confirm', error.message); else { notify('Confirmed', `New study number: ${data}`); load(); }
+  }
+
+  async function logReminder(patientId: string, due: string, channel: 'call' | 'sms' | 'whatsapp') {
+    if (!canEdit(role)) return;
+    setReminded(prev => new Map(prev).set(patientId, channel));
+    await supabase.from('reminder_log').insert({ patient_id: patientId, due_date: due, channel });
+  }
+
+  async function doBundle() {
+    setBundling(true);
+    try { const name = await exportAnalysisBundle(); notify('Downloaded', `${name}\n\nUnzip it, then open the .sps file in SPSS or the .R file in R.`); }
+    catch (e: any) { notify('Export failed', e.message); }
+    setBundling(false);
   }
 
   async function doExport() {
@@ -180,10 +198,11 @@ export default function Dashboard() {
         render={x => {
           const p = view.byId.get(x.patient_id);
           return (
-            <PersonRow name={p?.patient_name ?? ''} id={x.cr_no} badge={naive(p)}
+            <PersonRow name={p?.patient_name ?? ''} id={x.cr_no} badge={reminded.has(x.patient_id) ? `✓ Reminded (${reminded.get(x.patient_id)})` : naive(p)}
               sub={`Month ${x.slot_month} due ${fmt(x.due_date)} · ${lastLine(x.patient_id)}`}
               onPress={() => router.push(`/patient/${x.patient_id}`)}
-              right={<ContactButtons phone={p?.contact_no ?? null} message={reminderText(p?.patient_name ?? '', view.sat)} />} />
+              right={<ContactButtons phone={p?.contact_no ?? null} message={reminderText(p?.patient_name ?? '', view.sat)}
+                onSent={ch => logReminder(x.patient_id, x.due_date, ch)} />} />
           );
         }} />
 
@@ -219,6 +238,8 @@ export default function Dashboard() {
         )} />
 
       {canExport ? <Btn kind="export" icon="📥" title="Export Master Dataset" busy={exporting} onPress={doExport} /> : null}
+      {canExport ? <Btn kind="export" icon="📊" title="Export for SPSS / R (de-identified)" busy={bundling} onPress={doBundle} /> : null}
+      {session && role ? <Btn kind="ghost" icon="💬" title="Ask your data" onPress={() => router.push('/ask')} /> : null}
       {role === 'owner' ? <Btn kind="ghost" title="Team & settings" icon="👥" onPress={() => router.push('/team')} /> : null}
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>

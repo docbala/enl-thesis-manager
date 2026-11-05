@@ -77,10 +77,11 @@ function setup() {
   }
   // 3. Triggers: copy-back every 10 minutes, backup every Sunday night
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (['syncNow', 'weeklyBackup'].indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
+    if (['syncNow', 'weeklyBackup', 'fridayDigest'].indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('syncNow').timeBased().everyMinutes(10).create();
   ScriptApp.newTrigger('weeklyBackup').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(23).create();
+  ScriptApp.newTrigger('fridayDigest').timeBased().onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(18).create();
   // 4. Run both once now
   var n = syncNow();
   weeklyBackup();
@@ -90,6 +91,7 @@ function setup() {
 // ---------------------------------------------------------------- copy-back
 
 function syncNow() {
+  ensureDigestTrigger_();
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(30000)) return 0;
   var done = 0;
@@ -365,6 +367,43 @@ function asDate_(iso) {
   if (!iso) return '';
   var m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : iso;
+}
+
+// ---------------------------------------------------------------- Friday reminder email
+
+// Adds the Friday trigger once for setups made before it existed (no need to run setup again).
+function ensureDigestTrigger_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('DIGEST_TRIGGER')) return;
+  var has = ScriptApp.getProjectTriggers().some(function (t) { return t.getHandlerFunction() === 'fridayDigest'; });
+  if (!has) ScriptApp.newTrigger('fridayDigest').timeBased().onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(18).create();
+  props.setProperty('DIGEST_TRIGGER', '1');
+}
+
+function hindiReminder_(name, isoDate) {
+  var p = isoDate.split('-'), d = p[2] + '/' + p[1] + '/' + p[0];
+  return 'नमस्ते ' + name + ' जी,\nयह एम.वाई. अस्पताल (M.Y. Hospital), इंदौर के त्वचा रोग विभाग से सूचना है। आपकी नियमित स्वास्थ्य एवं खून की जाँच का समय हो गया है।\n' +
+    'फॉलो अप तिथि: ' + d + '\nसमय: सुबह 9:00 बजे, Dermatology OPD.\nपुरानी पर्ची एवं जाँच रिपोर्ट साथ लाएँ।';
+}
+
+// Friday 6 pm: email the list of patients due this Saturday, with one-tap WhatsApp links (Hindi message filled in).
+function fridayDigest() {
+  var res = rpc_('reminder_digest', { p_secret: CFG.SYNC_SECRET });
+  var items = res.items || [], sat = res.saturday;
+  if (!CFG.EMAIL) return;
+  var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+  var rows = items.map(function (it) {
+    var ph = String(it.phone || '').replace(/\D/g, '').slice(-10);
+    var wa = ph ? '<a href="https://wa.me/91' + ph + '?text=' + encodeURIComponent(hindiReminder_(it.name, sat)) + '">WhatsApp</a>' : 'no phone';
+    var call = ph ? ' · <a href="tel:' + ph + '">' + ph + '</a>' : '';
+    return '<tr><td style="padding:6px 10px"><b>' + esc(it.cr_no) + '</b></td><td style="padding:6px 10px">' + esc(it.name) + '</td>' +
+      '<td style="padding:6px 10px">Month ' + it.month + '</td><td style="padding:6px 10px">' + wa + call + (it.reminded ? ' ✓ reminded' : '') + '</td></tr>';
+  }).join('');
+  var html = '<p>Follow-up patients for <b>Saturday ' + sat + '</b>: ' + items.length + '</p>' +
+    (items.length ? '<table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">' + rows + '</table>' : '<p>No follow-up month is open this Saturday.</p>') +
+    '<p style="color:#666;font-size:12px">Tap WhatsApp to open the Hindi reminder for that patient. Sent by the ENL Sheet Sync script.</p>';
+  MailApp.sendEmail({ to: CFG.EMAIL, subject: 'Saturday follow-up list (' + items.length + '): ' + sat, htmlBody: html,
+    body: items.map(function (it) { return it.cr_no + '  ' + it.name + '  Month ' + it.month + '  ' + (it.phone || ''); }).join('\n') || 'No follow-ups this Saturday.' });
 }
 
 function photoLink_(id) { return CFG.APP_URL + '/photo/' + id; }

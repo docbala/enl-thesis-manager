@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Constants from 'expo-constants';
 import { createClient } from '@supabase/supabase-js';
+import { offlineFetch } from './offline';
 
 const extra = (Constants.expoConfig?.extra ?? {}) as { supabaseUrl: string; supabaseKey: string };
 
@@ -9,6 +10,7 @@ const extra = (Constants.expoConfig?.extra ?? {}) as { supabaseUrl: string; supa
 // so only invited members can read or change data.
 export const supabase = createClient(extra.supabaseUrl, extra.supabaseKey, {
   auth: { storage: AsyncStorage, autoRefreshToken: true, persistSession: true, detectSessionInUrl: false },
+  global: { fetch: offlineFetch },   // saves each read so the app still opens, read-only, without network
 });
 
 export type Role = 'owner' | 'editor' | 'viewer';

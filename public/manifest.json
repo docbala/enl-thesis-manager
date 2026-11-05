@@ -1,0 +1,14 @@
+{
+  "name": "ENL Thesis Manager",
+  "short_name": "ENL Thesis",
+  "description": "Leprosy ENL cohort: enrolment, follow-up, labs, ESS and graphs",
+  "start_url": "/enl-thesis-manager/",
+  "scope": "/enl-thesis-manager/",
+  "display": "standalone",
+  "background_color": "#F4F6F9",
+  "theme_color": "#1F4E78",
+  "icons": [
+    { "src": "/enl-thesis-manager/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/enl-thesis-manager/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
