@@ -34,7 +34,8 @@ var P_COLS = ['cr_no', 'enrollment_date', 'uhid', 'opd_slip_no', 'patient_name',
   'b_hb', 'b_nlr', 'b_plr', 'b_agr', 'b_vit_d3', 'b_uric_acid', 'enl_developed', 'next_due_date', 'patient_status',
   'opd_slip_url', 'diagnostic_report_url'];                       // 33 columns = A..AG
 var P_DATES = { enrollment_date: 1, next_due_date: 1 };
-var P_APP = ['APP_Patient_UUID', 'APP_MDT_Start_Date', 'APP_MDT_Start_Confirmed', 'APP_Synced_At'];
+var P_APP = ['APP_Patient_UUID', 'APP_MDT_Start_Date', 'APP_MDT_Start_Confirmed', 'APP_Synced_At', 'APP_Followups_Completed'];
+var P_KEEP_SHEET_VALUE = 21;   // Followups_Completed (column V) is a date-typed column in the sheet's table: never written
 
 var V_COLS = ['visit_id', 'cr_no', 'visit_type', 'visit_date', 'hb', 'tlc', 'granulocyte_pct', 'lymphocyte_pct', 'platelets',
   'nlr', 'plr', 'total_protein', 'albumin', 'globulin', 'agr', 'vit_d3', 'vit_b12', 'uric_acid', 'creatinine', 'sgot', 'sgpt',
@@ -51,13 +52,18 @@ function setup() {
     var copy = copySpreadsheet_(SpreadsheetApp.openById(CFG.SHEET_ID), 'HD_ENL_Thesis_Master (copy before app sync ' + today_() + ')');
     props.setProperty('SAFETY_COPY_ID', copy.getId());
   }
-  // 2. Triggers: copy-back every 10 minutes, backup every Sunday night
+  // 2. One-time repair: HD-001 was only partly written by the first version of this script
+  if (!props.getProperty('REPAIR_1_DONE')) {
+    rpc_('sheet_requeue', { p_secret: CFG.SYNC_SECRET, p_cr_nos: ['HD-001'] });
+    props.setProperty('REPAIR_1_DONE', 'yes');
+  }
+  // 3. Triggers: copy-back every 10 minutes, backup every Sunday night
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (['syncNow', 'weeklyBackup'].indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('syncNow').timeBased().everyMinutes(10).create();
   ScriptApp.newTrigger('weeklyBackup').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(23).create();
-  // 3. Run both once now
+  // 4. Run both once now
   var n = syncNow();
   weeklyBackup();
   Logger.log('Setup done. Copied %s change(s) to the sheet. Backup saved in Drive folder "%s".', n, CFG.BACKUP_FOLDER);
@@ -83,6 +89,7 @@ function syncNow() {
           if (!it.row) { rpc_('sheet_ack', { p_secret: CFG.SYNC_SECRET, p_ids: it.queue_ids }); continue; }
           if (it.table === 'patients') writePatient_(pSheet, pIdx, it.row);
           else writeVisit_(vSheet, vIdx, it.row);
+          SpreadsheetApp.flush();                                   // surfaces any refused write before it is marked done
           rpc_('sheet_ack', { p_secret: CFG.SYNC_SECRET, p_ids: it.queue_ids });
           done++;
         } catch (e) {
@@ -101,14 +108,15 @@ function writePatient_(sheet, idx, p) {
   var row = findPatientRow_(idx, p);
   var vals = toPatientRow(p);
   var app = { APP_Patient_UUID: p.id, APP_MDT_Start_Date: asDate_(p.mdt_start_date),
-    APP_MDT_Start_Confirmed: p.mdt_start_estimated ? 'N' : 'Y', APP_Synced_At: new Date() };
+    APP_MDT_Start_Confirmed: p.mdt_start_estimated ? 'N' : 'Y', APP_Synced_At: new Date(),
+    APP_Followups_Completed: p.followups_completed === null || p.followups_completed === undefined ? '' : p.followups_completed };
   if (row) {
+    vals[P_KEEP_SHEET_VALUE] = idx.data[row - 1][P_KEEP_SHEET_VALUE];   // leave the old app's value as it is
     sheet.getRange(row, 1, 1, vals.length).setValues([vals]);
-    sheet.getRange(row, 22).setNumberFormat('0');           // Followups_Completed is a count, not a date
   } else {
+    vals[P_KEEP_SHEET_VALUE] = '';
     sheet.appendRow(padRow_(vals, idx));
     row = sheet.getLastRow();
-    sheet.getRange(row, 22).setNumberFormat('0');
     idx.data.push(sheet.getRange(row, 1, 1, idx.width).getValues()[0]);
   }
   writeApp_(sheet, idx, row, app);
@@ -136,6 +144,7 @@ function toPatientRow(p) {
   return P_COLS.map(function (c) {
     var x = p[c];
     if (c === 'enl_developed') return x === true ? 'Y' : x === false ? 'N' : '';
+    if (c === 'contact_no' && /^\d+$/.test(String(x || ''))) return Number(x);   // number-typed column in the sheet
     if (P_DATES[c]) return asDate_(x);
     return x === null || x === undefined ? '' : x;
   });
