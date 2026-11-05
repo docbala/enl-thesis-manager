@@ -1,10 +1,11 @@
 # Builds the Android APK on GitHub's servers and publishes it as a release you can download on the phone.
-# Runs when a tag like apk-v1.0.0 is pushed, or from Actions → "Android APK" → Run workflow.
+# Runs when the app version in app.json changes on main (or this file changes), or from Actions → "Android APK" → Run workflow.
 name: Android APK
 
 on:
   push:
-    tags: ['apk-v*']
+    branches: [main]
+    paths: ['app.json', '.github/workflows/android.yml']
   workflow_dispatch:
 
 permissions:
