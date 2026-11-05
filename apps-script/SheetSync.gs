@@ -8,7 +8,14 @@
  *   - new APP_ columns to the right of those, which the old app never reads.
  * It never renames, moves, reorders or deletes tabs, columns or rows.
  *
- * One-time setup: paste this file into a new project at script.google.com, then run setup() once.
+ * One-time setup: paste this file and appsscript.json into a new project at script.google.com, then run setup() once.
+ *
+ * Permissions are limited on purpose (see appsscript.json):
+ *   - spreadsheets: read/write Google Sheets (needed for the thesis sheet; Google cannot limit this to one sheet)
+ *   - drive.file: ONLY files this script creates itself (the backup folder and backups), not the rest of your Drive
+ *   - script.external_request: talk to the study database
+ *   - script.scriptapp: run on a timer
+ *   - script.send_mail: send the backup email to you; it cannot read your Gmail
  */
 
 var CFG = {
@@ -17,6 +24,7 @@ var CFG = {
   SYNC_SECRET: '__SYNC_SECRET__',
   SHEET_ID: '1tMhgrwS45rbdQ69YjXoz7UBEF5z6-qZsTiUAiGqRJyM',
   BACKUP_FOLDER: 'ENL Thesis Backups',
+  EMAIL: 'happyneemtree@gmail.com',   // where backup emails go
   KEEP_WEEKLY: 12,
 };
 
@@ -40,7 +48,7 @@ function setup() {
   // 1. Safety copy of the whole sheet before the first write
   var props = PropertiesService.getScriptProperties();
   if (!props.getProperty('SAFETY_COPY_ID')) {
-    var copy = DriveApp.getFileById(CFG.SHEET_ID).makeCopy('HD_ENL_Thesis_Master (copy before app sync ' + today_() + ')', backupFolder_());
+    var copy = copySpreadsheet_(SpreadsheetApp.openById(CFG.SHEET_ID), 'HD_ENL_Thesis_Master (copy before app sync ' + today_() + ')');
     props.setProperty('SAFETY_COPY_ID', copy.getId());
   }
   // 2. Triggers: copy-back every 10 minutes, backup every Sunday night
@@ -208,7 +216,7 @@ function asDate_(iso) {
 // ---------------------------------------------------------------- weekly backup
 
 function weeklyBackup() {
-  var to = Session.getEffectiveUser().getEmail();
+  var to = CFG.EMAIL;
   try {
     var dump = rpc_('backup_dump', { p_secret: CFG.SYNC_SECRET });
     var folder = backupFolder_();
@@ -217,8 +225,9 @@ function weeklyBackup() {
     writeTable_(ss.getSheets()[0].setName('patients'), dump.patients);
     writeTable_(ss.insertSheet('visits'), dump.visits);
     writeTable_(ss.insertSheet('members'), dump.members);
-    DriveApp.getFileById(ss.getId()).moveTo(folder);
-    folder.createFile(name + '.json', JSON.stringify(dump), 'application/json');
+    moveToFolder_(ss.getId(), folder);
+    Drive.Files.create({ name: name + '.json', parents: [folder], mimeType: 'application/json' },
+      Utilities.newBlob(JSON.stringify(dump), 'application/json', name + '.json'));
     var removed = pruneBackups_(folder);
     if (to) MailApp.sendEmail(to, 'ENL Thesis backup done: ' + today_(),
       'Backup saved in Google Drive folder "' + CFG.BACKUP_FOLDER + '".\n\n' +
@@ -245,11 +254,15 @@ function writeTable_(sheet, rows) {
 
 // Keep the newest KEEP_WEEKLY backups plus the first backup of every month; move the rest to Trash.
 function pruneBackups_(folder) {
-  var files = [], it = folder.getFiles();
-  while (it.hasNext()) {
-    var f = it.next(), m = f.getName().match(/^ENL Backup (\d{4}-\d{2}-\d{2})(\.json)?$/);
-    if (m) files.push({ f: f, date: m[1], json: !!m[2] });
-  }
+  var files = [], token;
+  do {
+    var page = Drive.Files.list({ q: "'" + folder + "' in parents and trashed = false", fields: 'nextPageToken, files(id, name)', pageSize: 200, pageToken: token });
+    (page.files || []).forEach(function (f) {
+      var m = f.name.match(/^ENL Backup (\d{4}-\d{2}-\d{2})(\.json)?$/);
+      if (m) files.push({ id: f.id, date: m[1] });
+    });
+    token = page.nextPageToken;
+  } while (token);
   var dates = files.map(function (x) { return x.date; }).filter(function (d, i, a) { return a.indexOf(d) === i; }).sort().reverse();
   var keep = {};
   dates.slice(0, CFG.KEEP_WEEKLY).forEach(function (d) { keep[d] = 1; });
@@ -257,13 +270,40 @@ function pruneBackups_(folder) {
   dates.slice().sort().forEach(function (d) { var mo = d.slice(0, 7); if (!firstOfMonth[mo]) firstOfMonth[mo] = d; });
   Object.keys(firstOfMonth).forEach(function (mo) { keep[firstOfMonth[mo]] = 1; });
   var removed = 0;
-  files.forEach(function (x) { if (!keep[x.date]) { x.f.setTrashed(true); removed++; } });
+  files.forEach(function (x) { if (!keep[x.date]) { Drive.Files.update({ trashed: true }, x.id); removed++; } });
   return removed;
 }
 
+// The backup folder is created by this script, so the limited drive.file permission covers it. Returns its ID.
 function backupFolder_() {
-  var it = DriveApp.getFoldersByName(CFG.BACKUP_FOLDER);
-  return it.hasNext() ? it.next() : DriveApp.createFolder(CFG.BACKUP_FOLDER);
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('BACKUP_FOLDER_ID');
+  if (id) {
+    try { if (!Drive.Files.get(id, { fields: 'trashed' }).trashed) return id; } catch (e) { /* recreate below */ }
+  }
+  id = Drive.Files.create({ name: CFG.BACKUP_FOLDER, mimeType: 'application/vnd.google-apps.folder' }).id;
+  props.setProperty('BACKUP_FOLDER_ID', id);
+  return id;
+}
+
+// If the move is ever refused, the file simply stays in My Drive; the backup itself is still saved.
+function moveToFolder_(fileId, folderId) {
+  try {
+    var parents = (Drive.Files.get(fileId, { fields: 'parents' }).parents || []).join(',');
+    Drive.Files.update({}, fileId, null, { addParents: folderId, removeParents: parents });
+  } catch (e) {
+    Logger.log('Could not move %s into the backup folder (%s); it is in My Drive instead.', fileId, e && e.message || e);
+  }
+}
+
+// Copies every tab (values, formulas and formatting) into a new spreadsheet inside the backup folder.
+function copySpreadsheet_(src, name) {
+  var dest = SpreadsheetApp.create(name);
+  var blank = dest.getSheets()[0];
+  src.getSheets().forEach(function (sh) { sh.copyTo(dest).setName(sh.getName()); });
+  dest.deleteSheet(blank);
+  moveToFolder_(dest.getId(), backupFolder_());
+  return dest;
 }
 
 // ---------------------------------------------------------------- helpers
