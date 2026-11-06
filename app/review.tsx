@@ -1,13 +1,13 @@
 import { useCallback, useState } from 'react';
 import { FlatList, Pressable, RefreshControl, Text, View } from 'react-native';
-import { ask, notify } from '../../lib/dialog';
+import { ask, notify } from '../lib/dialog';
 import { router, useFocusEffect } from 'expo-router';
-import { supabase } from '../../lib/supabase';
-import { canEdit, useSession } from '../../lib/session';
-import { fmt } from '../../lib/dates';
-import { Btn, C, Chip, Muted, page, Screen, TONES } from '../../components/ui';
-import { GuestBanner, MembersOnly } from '../../components/Guest';
-import type { Suggestion } from '../../components/Suggestions';
+import { supabase } from '../lib/supabase';
+import { canEdit, useSession } from '../lib/session';
+import { fmt } from '../lib/dates';
+import { Btn, C, Chip, Muted, page, Screen, TONES } from '../components/ui';
+import { GuestBanner, MembersOnly } from '../components/Guest';
+import type { Suggestion } from '../components/Suggestions';
 
 type Item = { kind: 'patient' | 'visit' | 'conflict'; record_id: string; patient_id: string; cr_no: string;
   patient_name: string; visit_id: string | null; visit_date: string | null; notes: string[]; conflict_id: number | null };

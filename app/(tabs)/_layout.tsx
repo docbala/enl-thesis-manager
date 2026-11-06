@@ -24,7 +24,6 @@ export default function TabsLayout() {
       <Tabs.Screen name="analysis" options={{ title: 'Analysis', tabBarIcon: icon('chart-line') }} />
       <Tabs.Screen name="notifications" options={{ title: 'Notifications', tabBarIcon: icon('bell'),
         tabBarBadge: unread ? (unread > 99 ? '99+' : unread) : undefined, tabBarBadgeStyle: { backgroundColor: '#C53030', fontWeight: '800' } }} />
-      <Tabs.Screen name="review" options={{ href: null, title: 'Needs checking' }} />
     </Tabs>
   );
 }

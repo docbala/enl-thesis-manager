@@ -33,6 +33,7 @@ function Gate() {
       <Stack.Screen name="patient/trends" options={{ title: 'Trends' }} />
       <Stack.Screen name="photo/[id]" options={{ title: 'Photo' }} />
       <Stack.Screen name="photo/compare" options={{ title: 'Compare photos' }} />
+      <Stack.Screen name="review" options={{ title: 'Records to check' }} />
       <Stack.Screen name="master" options={{ title: 'Master list' }} />
       <Stack.Screen name="ask" options={{ title: 'Ask your data' }} />
       <Stack.Screen name="team" options={{ title: 'Team & settings' }} />

@@ -17,7 +17,6 @@ import {
 } from '../../components/ui';
 
 const TARGET_PATIENTS = 100;
-const TARGET_VISITS = 1200;   // 100 patients × 12 follow-up months
 
 type LastVisit = { id: string; patient_id: string; visit_type: string; visit_date: string; labs_not_ordered?: boolean; [k: string]: unknown };
 type SteroidFlag = { patient_id: string; cr_no: string; patient_name: string; taper_relapses: number; stop_relapses: number;
@@ -100,9 +99,12 @@ export default function Dashboard() {
     const confirmed = patients.filter(p => p.cr_no.startsWith('HD-')).length;
     const done = progress.reduce((a, r) => a + r.followups_completed, 0);
     const due = progress.reduce((a, r) => a + r.followups_completed + r.followups_missed, 0);
-    const visitsDone = slots.filter(x => x.status === 'completed').length;
+    // Each confirmed patient has their own schedule: 12 months minus the MDT months already done at enrolment.
+    const conf = new Set(patients.filter(p => p.cr_no.startsWith('HD-')).map(p => p.id));
+    const scheduled = progress.filter(r => conf.has(r.patient_id)).reduce((a, r) => a + r.followups_planned, 0);
+    const visitsDone = progress.filter(r => conf.has(r.patient_id)).reduce((a, r) => a + r.followups_completed, 0);
     return {
-      sat, saturday, awaiting, pendingRows, confirmed, done, due, visitsDone, activeCount: active.length,
+      sat, saturday, awaiting, pendingRows, confirmed, done, due, visitsDone, scheduled, activeCount: active.length,
       enl: patients.filter(p => p.enl_developed).length, byId, total: patients.length,
       naiveCount: patients.filter(p => (p.mdt_status ?? '').includes('Naive')).length,
     };
@@ -158,8 +160,8 @@ export default function Dashboard() {
             caption={`${view.confirmed} / ${TARGET_PATIENTS} confirmed cases (target counts confirmed only)`} />
           <ProgressCard title="Follow-up Adherence" color={C.teal} pct={view.due ? 100 * view.done / view.due : 0}
             caption={`${view.done} of ${view.due} follow-ups due so far were done`} />
-          <ProgressCard title="Overall Target" color={C.amber} pct={100 * view.visitsDone / TARGET_VISITS}
-            caption={`${view.visitsDone} visits against ${TARGET_VISITS} total visits benchmark`} />
+          <ProgressCard title="Overall Target" color={C.amber} pct={view.scheduled ? 100 * view.visitsDone / view.scheduled : 0}
+            caption={`${view.visitsDone} of ${view.scheduled} scheduled follow-ups completed (sum of each patient's own schedule)`} />
         </View>
       </Card>
 
@@ -174,7 +176,7 @@ export default function Dashboard() {
             <PersonRow name={p?.patient_name ?? ''} id={x.cr_no} badge={reminded.has(x.patient_id) ? `✓ Reminded (${reminded.get(x.patient_id)})` : naive(p)}
               sub={`Month ${x.slot_month} due ${fmt(x.due_date)} · ${lastLine(x.patient_id)}`}
               onPress={() => router.push(`/patient/${x.patient_id}`)}
-              right={<ContactButtons phone={p?.contact_no ?? null} message={reminderText(p?.patient_name ?? '', view.sat)}
+              right={<ContactButtons vertical phone={p?.contact_no ?? null} message={reminderText(p?.patient_name ?? '', view.sat)}
                 onSent={ch => logReminder(x.patient_id, x.due_date, ch)} />} />
           );
         }} />
