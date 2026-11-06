@@ -16,7 +16,7 @@ const SIZE: Record<PhotoKind, { side: number; q: number }> = {
   consent: { side: 2000, q: 0.85 }, lab_report: { side: 2000, q: 0.85 }, opd_slip: { side: 2000, q: 0.85 },
 };
 
-export type Picked = { base64: string; mime: string; width?: number; height?: number; bytes: number; name?: string };
+export type Picked = { base64: string; mime: string; width?: number; height?: number; bytes: number; name?: string; thumb?: string };
 
 async function compress(asset: { uri: string; width?: number; height?: number }, kind: PhotoKind): Promise<Picked> {
   const { side, q } = SIZE[kind];
@@ -31,7 +31,14 @@ async function compress(asset: { uri: string; width?: number; height?: number },
   const img = await ctx.renderAsync();
   const out = await img.saveAsync({ compress: q, format: SaveFormat.JPEG, base64: true });
   const b64 = out.base64 ?? '';
-  return { base64: b64, mime: 'image/jpeg', width: out.width, height: out.height, bytes: Math.round(b64.length * 0.75) };
+  let thumb: string | undefined;
+  if (kind === 'profile') {                                   // small copy for lists (about 10 KB)
+    const tc = ImageManipulator.manipulate(asset.uri);
+    tc.resize(asset.width! >= asset.height! ? { height: 160 } : { width: 160 });
+    const ti = await (await tc.renderAsync()).saveAsync({ compress: 0.7, format: SaveFormat.JPEG, base64: true });
+    thumb = ti.base64 ?? undefined;
+  }
+  return { base64: b64, mime: 'image/jpeg', width: out.width, height: out.height, bytes: Math.round(b64.length * 0.75), thumb };
 }
 
 // Camera or gallery, compressed. Returns null if the user cancels.
@@ -82,9 +89,15 @@ export async function savePhoto(p: { patientId: string; visitId?: string | null;
   const path = `${p.patientId}/${p.kind}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
   const up = await supabase.storage.from('study-files').upload(path, base64ToBytes(p.file.base64), { contentType: p.file.mime, upsert: false });
   if (up.error) throw new Error(up.error.message);
+  let thumbPath: string | null = null;
+  if (p.file.thumb) {
+    thumbPath = path.replace(/\.jpg$/, '-thumb.jpg');
+    const tu = await supabase.storage.from('study-files').upload(thumbPath, base64ToBytes(p.file.thumb), { contentType: 'image/jpeg', upsert: false });
+    if (tu.error) thumbPath = null;                            // the full photo still works without it
+  }
   const { data, error } = await supabase.from('photos').insert({
     patient_id: p.patientId, visit_id: p.visitId ?? null, kind: p.kind, body_site: p.bodySite ?? null, note: p.note ?? null,
-    storage_path: path, mime_type: p.file.mime, width: p.file.width ?? null, height: p.file.height ?? null, bytes: p.file.bytes,
+    storage_path: path, thumb_path: thumbPath, mime_type: p.file.mime, width: p.file.width ?? null, height: p.file.height ?? null, bytes: p.file.bytes,
   }).select('*').single();
   if (error) { await supabase.storage.from('study-files').remove([path]); throw new Error(error.message); }
   return data as Photo;

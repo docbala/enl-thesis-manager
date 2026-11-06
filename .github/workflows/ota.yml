@@ -1,0 +1,37 @@
+# Sends app changes to installed Android phones over the air (no new APK needed).
+# Native changes (new phone features) need a new APK: bump "version" in app.json and android.yml builds it.
+name: Over-the-air update
+
+on:
+  push:
+    branches: [main]
+    paths: ['app/**', 'components/**', 'lib/**', 'assets/**', 'package.json']
+  workflow_dispatch:
+
+concurrency:
+  group: ota
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the Expo token is set
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then echo "::error::Add the repository secret EXPO_TOKEN (Settings → Secrets and variables → Actions)."; exit 1; fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: Publish update to the production channel
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          MSG=$(git log -1 --pretty=%s | cut -c1-200)
+          npx --yes eas-cli@latest update --channel production --platform android --message "$MSG" --non-interactive

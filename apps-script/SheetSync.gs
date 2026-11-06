@@ -426,18 +426,25 @@ function weeklyBackup() {
     var removed = pruneBackups_(folder);
     var photos = '';
     try { photos = backupPhotos_(folder); } catch (pe) { photos = 'Photo copy FAILED: ' + (pe && pe.message || pe) + ' (it will retry next week)'; }
+    logEvent_('weekly_backup', true, dump.counts.patients + ' patients, ' + dump.counts.visits + ' visits' + (photos ? '. ' + photos : ''));
     if (to) MailApp.sendEmail(to, 'ENL Thesis backup done: ' + today_(),
       'Backup saved in Google Drive folder "' + CFG.BACKUP_FOLDER + '".\n\n' +
       'Patients: ' + dump.counts.patients + '\nVisits: ' + dump.counts.visits + '\nAudit entries: ' + dump.counts.audit_entries +
       (photos ? '\n\n' + photos : '') +
       (removed ? '\n\nOld backups removed (keeping the last ' + CFG.KEEP_WEEKLY + ' weeks and one per month): ' + removed : ''));
   } catch (e) {
+    logEvent_('weekly_backup', false, String(e && e.message || e));
     if (to) MailApp.sendEmail(to, 'ENL Thesis backup FAILED: ' + today_(), 'The weekly backup did not complete.\n\n' + (e && e.message || e));
     throw e;
   }
 }
 
 function backupNow() { weeklyBackup(); }
+
+// Records the backup result so the app's Notifications tab can warn when a backup fails or does not run.
+function logEvent_(kind, ok, message) {
+  try { rpc_('log_system_event', { p_secret: CFG.SYNC_SECRET, p_kind: kind, p_ok: ok, p_message: String(message).slice(0, 900) }); } catch (e) { /* never block the backup */ }
+}
 
 // Copies photos and scans added since the last run into "<backup folder>/Photos/<CR No>/".
 // Picks up where it stopped if a run ends early (Apps Script allows about 6 minutes).

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Image, Pressable, Text, View } from 'react-native';
+import { Image, Modal, Pressable, Text, useWindowDimensions, View } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '../lib/supabase';
 import { notify } from '../lib/dialog';
@@ -7,10 +7,12 @@ import { Photo, Picked, savePhoto } from '../lib/photos';
 import { Btn, C, Card, Chip, H, Muted, s } from './ui';
 import { CaptureButtons, Thumb, useSignedUrls } from './Photos';
 
-// Round profile photo for the patient header; tap to take or change it.
+// Round profile photo for the patient header. Tap it to see it full screen; "Change" takes a new one.
 export function ProfileAvatar({ patientId, editable, refreshKey }: { patientId: string; editable: boolean; refreshKey: number }) {
   const [path, setPath] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [big, setBig] = useState(false);
+  const { width, height } = useWindowDimensions();
   const load = useCallback(async () => {
     const { data } = await supabase.from('v_profile_photo').select('storage_path').eq('patient_id', patientId).maybeSingle();
     setPath((data as any)?.storage_path ?? null);
@@ -25,13 +27,19 @@ export function ProfileAvatar({ patientId, editable, refreshKey }: { patientId: 
   }
   return (
     <View style={{ alignItems: 'center' }}>
-      <Pressable onPress={() => editable && setPicking(x => !x)}>
+      <Pressable onPress={() => (url ? setBig(true) : editable && setPicking(x => !x))} accessibilityLabel={url ? 'Enlarge photo' : 'Add photo'}>
         <View style={{ width: 84, height: 84, borderRadius: 42, overflow: 'hidden', backgroundColor: C.tile, borderWidth: 2, borderColor: C.line, alignItems: 'center', justifyContent: 'center' }}>
           {url ? <Image source={{ uri: url }} style={{ width: 84, height: 84 }} /> : <Text style={{ fontSize: 30, color: C.quiet }}>👤</Text>}
         </View>
       </Pressable>
-      {editable ? <Text style={{ fontSize: 11, color: C.primary, marginTop: 2 }}>{path ? 'Change' : 'Add photo'}</Text> : null}
+      {editable ? <Text onPress={() => setPicking(x => !x)} style={{ fontSize: 12, color: C.primary, marginTop: 4, fontWeight: '700' }}>{path ? 'Change' : 'Add photo'}</Text> : null}
       {picking ? <View style={{ width: 260 }}><CaptureButtons kind="profile" onPicked={onPicked} /></View> : null}
+      <Modal visible={big} transparent animationType="fade" onRequestClose={() => setBig(false)}>
+        <Pressable onPress={() => setBig(false)} style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center' }}>
+          {url ? <Image source={{ uri: url }} style={{ width: Math.min(width, 900) - 24, height: height * 0.8 }} resizeMode="contain" /> : null}
+          <Text style={{ color: '#fff', marginTop: 12, opacity: 0.8 }}>Tap anywhere to close</Text>
+        </Pressable>
+      </Modal>
     </View>
   );
 }

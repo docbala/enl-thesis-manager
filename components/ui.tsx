@@ -65,14 +65,17 @@ export function HeaderCard() {
   );
 }
 
-export function StatTile({ value, label, tone }: { value: number | string; label: string; tone?: 'amber' }) {
+export function StatTile({ value, label, tone, sub, onPress }: { value: number | string; label: string; tone?: 'amber'; sub?: string; onPress?: () => void }) {
   const amber = tone === 'amber';
   return (
-    <View style={{ flex: 1, minWidth: 140, backgroundColor: amber ? TONES.amber.bg : C.tile, borderRadius: 12,
-      paddingVertical: 16, alignItems: 'center', borderWidth: 2, borderColor: amber ? TONES.amber.border : 'transparent' }}>
+    <Pressable onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? 'button' : undefined} accessibilityLabel={`${label}: ${value}`}
+      style={({ pressed }) => ({ flex: 1, minWidth: 140, backgroundColor: amber ? TONES.amber.bg : C.tile, borderRadius: 12,
+        paddingVertical: 16, paddingHorizontal: 8, alignItems: 'center', borderWidth: 2, borderColor: amber ? TONES.amber.border : 'transparent', opacity: pressed ? 0.75 : 1 })}>
       <Text style={{ fontSize: 30, fontWeight: '800', color: amber ? C.warn : C.primary }}>{value}</Text>
       <Text style={{ color: C.quiet, marginTop: 2, textAlign: 'center' }}>{label}</Text>
-    </View>
+      {sub ? <Text style={{ color: C.quiet, fontSize: 11, marginTop: 2, textAlign: 'center' }}>{sub}</Text> : null}
+      {onPress ? <Text style={{ color: amber ? C.warn : C.primary, fontSize: 11, fontWeight: '700', marginTop: 4 }}>View list ›</Text> : null}
+    </Pressable>
   );
 }
 
@@ -113,12 +116,13 @@ export function Section<T>({ title, icon, tone, items, render, empty, keyOf }: {
   );
 }
 
-export function PersonRow({ name, id, badge, badgeTone = 'good', sub, subColor, onPress, right }: {
+export function PersonRow({ name, id, badge, badgeTone = 'good', sub, subColor, onPress, right, left }: {
   name: string; id: string; badge?: string | null; badgeTone?: 'good' | 'warn'; sub?: string; subColor?: string;
-  onPress?: () => void; right?: React.ReactNode;
+  onPress?: () => void; right?: React.ReactNode; left?: React.ReactNode;
 }) {
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [s.person, { opacity: pressed ? 0.85 : 1 }]}>
+      {left ? <View style={{ marginRight: 12 }}>{left}</View> : null}
       <View style={{ flex: 1, paddingRight: 8 }}>
         {/* visitors see the study number in place of the name */}
         <Text style={{ fontSize: 16, color: C.ink }}><Text style={{ fontWeight: '800' }}>{name}</Text>{name === id ? '' : ` (${id})`}</Text>

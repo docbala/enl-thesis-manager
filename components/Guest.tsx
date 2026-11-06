@@ -2,6 +2,7 @@ import { Pressable, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSession } from '../lib/session';
+import { supabase } from '../lib/supabase';
 import { C, TONES } from './ui';
 
 export function LoginPill() {
@@ -15,8 +16,19 @@ export function LoginPill() {
 
 // Shown to visitors who are not signed in.
 export function GuestBanner({ compact }: { compact?: boolean }) {
-  const { guest } = useSession();
+  const { guest, pending, session } = useSession();
   if (!guest) return null;
+  if (pending) return (
+    <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center', backgroundColor: TONES.amber.bg, borderColor: TONES.amber.border, borderWidth: 1,
+      borderRadius: 14, padding: 12, marginBottom: 14 }}>
+      <MaterialCommunityIcons name="account-clock-outline" size={22} color={C.warn} />
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: C.warn, fontWeight: '800' }}>Access request sent</Text>
+        {compact ? null : <Text style={{ color: C.ink, marginTop: 2 }}>Signed in as {session?.user.email}. Until the study owner approves you, you see the de-identified view: study numbers only, no names, contacts or photos.</Text>}
+      </View>
+      <Text onPress={() => supabase.auth.signOut()} style={{ color: C.primary, fontWeight: '800' }}>Sign out</Text>
+    </View>
+  );
   return (
     <Pressable onPress={() => router.push('/login')}
       style={{ flexDirection: 'row', gap: 10, alignItems: 'center', backgroundColor: TONES.blue.bg, borderColor: TONES.blue.border, borderWidth: 1,

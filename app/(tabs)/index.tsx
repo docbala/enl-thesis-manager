@@ -5,11 +5,12 @@ import { supabase, tbl } from '../../lib/supabase';
 import { canEdit, useSession } from '../../lib/session';
 import { GuestBanner } from '../../components/Guest';
 import { UpdateNotice } from '../../components/UpdateNotice';
-import { exportAnalysisBundle } from '../../lib/analysisExport';
+import { ExportSheet } from '../../components/ExportSheet';
+import { Fab } from '../../components/Fab';
+import { daysSince, noLabValues, LAB_KEYS } from '../../lib/study';
 import type { Patient, Progress, Slot } from '../../lib/types';
 import { ask, notify } from '../../lib/dialog';
 import { comingSaturday, reminderText } from '../../lib/messages';
-import { exportMasterDataset } from '../../lib/export';
 import { fmt, todayISO } from '../../lib/dates';
 import {
   Btn, C, Card, Chip, ContactButtons, HeaderCard, Muted, PersonRow, ProgressCard, Screen, Section, StatTile, TONES,
@@ -18,7 +19,7 @@ import {
 const TARGET_PATIENTS = 100;
 const TARGET_VISITS = 1200;   // 100 patients × 12 follow-up months
 
-type LastVisit = { patient_id: string; visit_type: string; visit_date: string };
+type LastVisit = { id: string; patient_id: string; visit_type: string; visit_date: string; labs_not_ordered?: boolean; [k: string]: unknown };
 type SteroidFlag = { patient_id: string; cr_no: string; patient_name: string; taper_relapses: number; stop_relapses: number;
   steroid_dependent: boolean; possible_nonresponder: boolean; current_mg: number | null };
 
@@ -33,8 +34,8 @@ export default function Dashboard() {
   const [canExport, setCanExport] = useState(false);
   const [flags, setFlags] = useState<SteroidFlag[]>([]);
   const [loading, setLoading] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [bundling, setBundling] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [noLabVisits, setNoLabVisits] = useState<LastVisit[]>([]);
   const [reminded, setReminded] = useState<Map<string, string>>(new Map());   // patient -> channel, last 7 days
 
   const load = useCallback(async () => {
@@ -43,11 +44,11 @@ export default function Dashboard() {
       supabase.from(tbl('patients')).select('*').is('deleted_at', null),
       supabase.from(tbl('v_patient_progress')).select('*'),
       supabase.from(tbl('v_schedule')).select('*'),
-      supabase.from(tbl('visits')).select('patient_id, visit_type, visit_date').is('deleted_at', null).order('visit_date', { ascending: false }),
-      session ? supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }) : Promise.resolve({ count: 0 } as any),
-      session ? supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null) : Promise.resolve({ error: true } as any),
-      session ? supabase.from('members').select('can_export').eq('user_id', session.user.id).maybeSingle() : Promise.resolve({ data: null } as any),
-      session ? supabase.from('reminder_log').select('patient_id, channel, sent_at').gt('sent_at', new Date(Date.now() - 7 * 86400000).toISOString()).order('sent_at') : Promise.resolve({ data: [] } as any),
+      supabase.from(tbl('visits')).select(['id', 'patient_id', 'visit_type', 'visit_date', 'labs_not_ordered', ...LAB_KEYS].join(',')).is('deleted_at', null).order('visit_date', { ascending: false }),
+      role ? supabase.from('v_review_items').select('record_id', { count: 'exact', head: true }) : Promise.resolve({ count: 0 } as any),
+      role ? supabase.from('sync_queue').select('id', { count: 'exact', head: true }).is('done_at', null) : Promise.resolve({ error: true } as any),
+      role && session ? supabase.from('members').select('can_export').eq('user_id', session.user.id).maybeSingle() : Promise.resolve({ data: null } as any),
+      role ? supabase.from('reminder_log').select('patient_id, channel, sent_at').gt('sent_at', new Date(Date.now() - 7 * 86400000).toISOString()).order('sent_at') : Promise.resolve({ data: [] } as any),
       supabase.from(tbl('v_steroid_flags')).select('*'),
     ]);
     setFlags(((fl.data ?? []) as SteroidFlag[]).filter(f => f.steroid_dependent || f.possible_nonresponder || f.taper_relapses > 0 || f.stop_relapses > 0)
@@ -56,14 +57,15 @@ export default function Dashboard() {
     setProgress((pg.data ?? []) as Progress[]);
     setSlots((sl.data ?? []) as Slot[]);
     const m = new Map<string, LastVisit>();
-    for (const v of (vs.data ?? []) as LastVisit[]) if (!m.has(v.patient_id)) m.set(v.patient_id, v);
+    for (const v of (vs.data ?? []) as unknown as LastVisit[]) if (!m.has(v.patient_id)) m.set(v.patient_id, v);
     setLast(m);
+    setNoLabVisits(((vs.data ?? []) as unknown as LastVisit[]).filter(v => noLabValues(v)));
     setToReview(rv.count ?? 0);
     setPendingSync(sq.error ? null : sq.count ?? 0);
     setCanExport(!!me.data?.can_export);
     setReminded(new Map(((rm.data ?? []) as { patient_id: string; channel: string }[]).map(r => [r.patient_id, r.channel])));
     setLoading(false);
-  }, [session?.user.id]);
+  }, [session?.user.id, role]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -87,30 +89,24 @@ export default function Dashboard() {
         pending.set(x.patient_id, [...(pending.get(x.patient_id) ?? []), label]);
       }
     }
-    const pendingRows = [...pending.entries()].map(([id, months]) => ({ p: byId.get(id)!, months }))
-      .filter(r => r.p).sort((a, b) => a.p.cr_no.localeCompare(b.p.cr_no));
+    const labRows = noLabVisits.filter(v => byId.get(v.patient_id))
+      .map(v => ({ key: 'v' + v.id, p: byId.get(v.patient_id)!, route: `/visit/${v.id}`, kind: 'labs' as const,
+        text: `${v.visit_type} on ${fmt(v.visit_date)}: no lab values yet (${daysSince(v.visit_date)} day${daysSince(v.visit_date) === 1 ? '' : 's'})` }))
+      .sort((a, b) => b.text.localeCompare(a.text));
+    const overdueRows = [...pending.entries()].filter(([id]) => byId.get(id))
+      .map(([id, months]) => ({ key: 'p' + id, p: byId.get(id)!, route: `/patient/${id}`, kind: 'overdue' as const, text: `Visit not logged: ${months.join(', ')}` }))
+      .sort((a, b) => a.p.cr_no.localeCompare(b.p.cr_no));
+    const pendingRows = [...labRows, ...overdueRows];
     const confirmed = patients.filter(p => p.cr_no.startsWith('HD-')).length;
     const done = progress.reduce((a, r) => a + r.followups_completed, 0);
     const due = progress.reduce((a, r) => a + r.followups_completed + r.followups_missed, 0);
     const visitsDone = slots.filter(x => x.status === 'completed').length;
     return {
       sat, saturday, awaiting, pendingRows, confirmed, done, due, visitsDone, activeCount: active.length,
-      enl: patients.filter(p => p.enl_developed).length, byId,
+      enl: patients.filter(p => p.enl_developed).length, byId, total: patients.length,
+      naiveCount: patients.filter(p => (p.mdt_status ?? '').includes('Naive')).length,
     };
-  }, [patients, progress, slots]);
-
-  if (session && !role) {
-    return (
-      <Screen>
-        <HeaderCard />
-        <Card>
-          <Text style={{ fontSize: 18, fontWeight: '800', color: C.primary }}>Waiting for access</Text>
-          <Muted>You are signed in as {session?.user.email}, but this email has not been invited yet. Ask the study owner to add you.</Muted>
-          <Btn kind="ghost" title="Sign out" onPress={() => supabase.auth.signOut()} />
-        </Card>
-      </Screen>
-    );
-  }
+  }, [patients, progress, slots, noLabVisits]);
 
   async function confirmCase(p: Patient) {
     if (!(await ask('Confirm report?', `${p.patient_name} (${p.cr_no}) will be marked Confirmed and get the next HD number.`, 'Confirm'))) return;
@@ -124,22 +120,6 @@ export default function Dashboard() {
     await supabase.from('reminder_log').insert({ patient_id: patientId, due_date: due, channel });
   }
 
-  async function doBundle() {
-    setBundling(true);
-    try { const name = await exportAnalysisBundle(); notify('Downloaded', `${name}\n\nUnzip it, then open the .sps file in SPSS or the .R file in R.`); }
-    catch (e: any) { notify('Export failed', e.message); }
-    setBundling(false);
-  }
-
-  async function doExport() {
-    const identified = await ask('Export master dataset',
-      'Include names, UHID, phone and address?\n\nOK = identified (keep private)\nCancel = de-identified (HD numbers only)', 'Identified');
-    setExporting(true);
-    try { const name = await exportMasterDataset(identified); notify('Exported', name); }
-    catch (e: any) { notify('Export failed', e.message); }
-    setExporting(false);
-  }
-
   const lastLine = (id: string) => {
     const v = last.get(id);
     return v ? `Last visit: ${v.visit_type} (${fmt(v.visit_date)})` : 'No visit yet';
@@ -147,6 +127,7 @@ export default function Dashboard() {
   const naive = (p?: Patient) => (p?.mdt_status ?? '').includes('Naive') ? 'Newly Diagnosed (Naive)' : null;
 
   return (
+    <View style={{ flex: 1 }}>
     <Screen refreshing={loading} onRefresh={load}>
       <UpdateNotice />
       <GuestBanner />
@@ -155,12 +136,12 @@ export default function Dashboard() {
       <Card>
         <Text style={{ fontSize: 20, fontWeight: '800', color: C.primary, marginBottom: 14 }}>Thesis Progress Dashboard</Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-          <StatTile value={view.confirmed} label="Total Enrolled Patients" />
-          <StatTile value={view.awaiting.length} label="SSS / Biopsy Awaited" tone="amber" />
+          <StatTile value={view.total} label="Total Enrolled Patients" sub={`${view.confirmed} confirmed · ${view.awaiting.length} awaiting`} onPress={() => router.push('/master?filter=all')} />
+          <StatTile value={view.awaiting.length} label="SSS / Biopsy Awaited" tone="amber" onPress={() => router.push('/master?filter=awaiting')} />
         </View>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 10 }}>
-          <StatTile value={view.enl} label="ENL Cases" />
-          <StatTile value={view.saturday.length} label="Due This Saturday" />
+          <StatTile value={view.enl} label="ENL Cases" onPress={() => router.push('/master?filter=enl')} />
+          <StatTile value={view.naiveCount} label="Newly Diagnosed (Naive)" onPress={() => router.push('/master?filter=naive')} />
         </View>
 
         <View style={{ marginTop: 18, borderTopWidth: 1, borderTopColor: C.line, paddingTop: 6 }}>
@@ -174,7 +155,7 @@ export default function Dashboard() {
             </View>
           </View>
           <ProgressCard title="Patient Enrollment" color={C.good} pct={100 * view.confirmed / TARGET_PATIENTS}
-            caption={`${view.confirmed} / ${TARGET_PATIENTS} patients enrolled`} />
+            caption={`${view.confirmed} / ${TARGET_PATIENTS} confirmed cases (target counts confirmed only)`} />
           <ProgressCard title="Follow-up Adherence" color={C.teal} pct={view.due ? 100 * view.done / view.due : 0}
             caption={`${view.done} of ${view.due} follow-ups due so far were done`} />
           <ProgressCard title="Overall Target" color={C.amber} pct={100 * view.visitsDone / TARGET_VISITS}
@@ -182,16 +163,6 @@ export default function Dashboard() {
         </View>
       </Card>
 
-      {canEdit(role) ? <Btn title="Enrol new patient" icon="＋" onPress={() => router.push('/patient/new')} /> : null}
-
-      {toReview ? (
-        <Pressable onPress={() => router.push('/review')}>
-          <View style={{ backgroundColor: TONES.amber.bg, borderColor: TONES.amber.border, borderWidth: 1, borderRadius: 14, padding: 14, marginVertical: 10 }}>
-            <Text style={{ color: C.warn, fontWeight: '800', fontSize: 16 }}>⚑  {toReview} imported records need checking</Text>
-            <Muted>Tap to open the review list</Muted>
-          </View>
-        </Pressable>
-      ) : null}
 
       <View style={{ height: 6 }} />
 
@@ -220,12 +191,17 @@ export default function Dashboard() {
               : null} />
         )} />
 
-      <Section title="Pending Lab Investigation Reports" icon="🔬" tone="pink" items={view.pendingRows} keyOf={r => r.p.id}
-        empty="No overdue visits or reports."
+      <Section title="Pending Lab Investigation Reports" icon="🔬" tone="pink" items={view.pendingRows} keyOf={r => r.key}
+        empty="No visits waiting for reports, and no overdue visits."
         render={r => (
-          <PersonRow name={r.p.patient_name} id={r.p.cr_no} sub={`Missing: ${r.months.join(', ')}`} subColor={TONES.pink.title}
-            onPress={() => router.push(`/patient/${r.p.id}`)}
-            right={<ContactButtons phone={r.p.contact_no} sms={false} message={reminderText(r.p.patient_name, view.sat)} />} />
+          <PersonRow name={r.p.patient_name} id={r.p.cr_no} sub={r.text} subColor={TONES.pink.title}
+            badge={r.kind === 'labs' ? 'Reports pending' : null} badgeTone="warn"
+            onPress={() => router.push(r.route as any)}
+            right={r.kind === 'labs' && canEdit(role)
+              ? <Pressable onPress={() => router.push(r.route as any)} style={{ backgroundColor: TONES.pink.title, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 }}>
+                  <Text style={{ color: '#fff', fontWeight: '800', textAlign: 'center' }}>Add{'\n'}report</Text>
+                </Pressable>
+              : r.kind === 'overdue' ? <ContactButtons phone={r.p.contact_no} sms={false} message={reminderText(r.p.patient_name, view.sat)} /> : null} />
         )} />
 
       <Section title="Steroid Response Flags" icon="💊" tone="pink" items={flags} keyOf={f => f.patient_id}
@@ -239,15 +215,18 @@ export default function Dashboard() {
             onPress={() => router.push(`/patient/${f.patient_id}`)} />
         )} />
 
-      {canExport ? <Btn kind="export" icon="📥" title="Export Master Dataset" busy={exporting} onPress={doExport} /> : null}
-      {canExport ? <Btn kind="export" icon="📊" title="Export for SPSS / R (de-identified)" busy={bundling} onPress={doBundle} /> : null}
-      {session && role ? <Btn kind="ghost" icon="💬" title="Ask your data" onPress={() => router.push('/ask')} /> : null}
+      {canExport ? <Btn kind="export" icon="📥" title="Export" onPress={() => setExportOpen(true)} /> : null}
+      {role ? <Btn kind="ghost" icon="💬" title="Ask your data" onPress={() => router.push('/ask')} /> : null}
       {role === 'owner' ? <Btn kind="ghost" title="Team & settings" icon="👥" onPress={() => router.push('/team')} /> : null}
 
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
         {session && pendingSync !== null ? <Chip text={`Sheet copy: ${pendingSync} waiting`} tone={pendingSync ? 'warn' : 'good'} /> : <View />}
         {session ? <Pressable onPress={() => supabase.auth.signOut()}><Text style={{ color: C.primary, fontWeight: '700', padding: 8 }}>Sign out</Text></Pressable> : null}
       </View>
+      <View style={{ height: 80 }} />
     </Screen>
+    {canEdit(role) ? <Fab /> : null}
+    <ExportSheet visible={exportOpen} onClose={() => setExportOpen(false)} />
+    </View>
   );
 }

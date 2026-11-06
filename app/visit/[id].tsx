@@ -8,7 +8,7 @@ import { canEdit, useSession } from '../../lib/session';
 import type { Patient, Slot, Visit } from '../../lib/types';
 import { ALL_LAB_FIELDS, hba1cDue, LAB_GROUPS, LabKey, outOfRange, ratios, toNum } from '../../lib/labs';
 import { fmt, isISODate, todayISO } from '../../lib/dates';
-import { Btn, C, Card, Choice, Field, H, Muted, s, page } from '../../components/ui';
+import { Btn, C, Card, Choice, Field, H, Muted, s, page, TONES } from '../../components/ui';
 import { EssForm } from '../../components/EssForm';
 import { ESS_ITEMS, EssScores, essScored, essTotal } from '../../lib/ess';
 import { BODY_SITES, Photo, Picked, savePhoto, scanDocument } from '../../lib/photos';
@@ -29,7 +29,7 @@ function slotFor(date: string, slots: Slot[]) {
 }
 
 export default function VisitScreen() {
-  const { id, patient } = useLocalSearchParams<{ id: string; patient?: string }>();
+  const { id, patient, enl: enlParam } = useLocalSearchParams<{ id: string; patient?: string; enl?: string }>();
   const isNew = id === 'new';
   const { role, guest } = useSession();
   const editable = canEdit(role);
@@ -40,7 +40,8 @@ export default function VisitScreen() {
   const [date, setDate] = useState(todayISO());
   const [kind, setKind] = useState<'Scheduled' | 'Baseline' | 'Unscheduled'>('Scheduled');
   const [labs, setLabs] = useState<Lab>(emptyLabs());
-  const [enl, setEnl] = useState(false);
+  const [enl, setEnl] = useState(enlParam === '1');      // opened from "Log ENL reaction"
+  const [noLabs, setNoLabs] = useState(false);            // "no labs ordered at this visit"
   const [ess, setEss] = useState<EssScores>({});
   const [oldEss, setOldEss] = useState<number | null>(null);   // a score saved with the old app's questionnaire
   const [pred, setPred] = useState('');
@@ -65,7 +66,7 @@ export default function VisitScreen() {
         setKind(v.visit_type === 'Baseline Visit' ? 'Baseline' : v.is_unscheduled || !v.visit_type.startsWith('Month') ? 'Unscheduled' : 'Scheduled');
         setLabs(Object.fromEntries(ALL_LAB_FIELDS.map(f => [f.key,
           f.key === 'vit_b12' && v.vit_b12_flag ? v.vit_b12_flag + str(v.vit_b12) : str(v[f.key])])) as Lab);
-        setEnl(!!v.enl_reaction); setPred(str(v.prednisolone_mg));
+        setEnl(!!v.enl_reaction); setNoLabs(!!(v as any).labs_not_ordered); setPred(str(v.prednisolone_mg));
         const { data: a } = await supabase.from(tbl('ess_assessments')).select('*').eq('visit_id', v.id).maybeSingle();
         if (a) setEss(Object.fromEntries(ESS_ITEMS.map(i => [i.key, (a as any)[i.key]])) as EssScores);
         else if (v.ess_score != null) setOldEss(Number(v.ess_score));
@@ -108,6 +109,7 @@ export default function VisitScreen() {
     return () => clearTimeout(h);
   }, [ready, date, kind, labs, enl, ess, pred, weight, notes]);
 
+  const labsEmpty = ALL_LAB_FIELDS.every(f => !labs[f.key].trim());
   const savedUrls = useSignedUrls(saved.filter(x => x.mime_type !== 'application/pdf').map(x => x.storage_path));
 
   // Gemini reads the report; values fill empty boxes only, highlighted until checked. The report is attached to the visit.
@@ -171,7 +173,7 @@ export default function VisitScreen() {
       const row: Record<string, unknown> = {
         patient_id: p.id, visit_type: visitType, visit_date: date, is_unscheduled: kind === 'Unscheduled',
         enl_reaction: enl, ...(enl ? {} : { ess_score: null }), prednisolone_mg: toNum(pred), weight_kg: toNum(weight),
-        clinical_notes: notes.trim() || null,
+        clinical_notes: notes.trim() || null, labs_not_ordered: noLabs && labsEmpty,
         ...Object.fromEntries(ALL_LAB_FIELDS.filter(f => f.key !== 'vit_b12').map(f => [f.key, nums[f.key] ?? null])),
         vit_b12: nums.vit_b12 ?? null, vit_b12_flag: /^[<>]/.test(b12raw) ? b12raw[0] : null,
       };
@@ -274,6 +276,19 @@ export default function VisitScreen() {
             <View style={{ flex: 1 }}><Field label="Weight" unit="kg" keyboardType="decimal-pad" value={weight} onChangeText={setWeight} editable={editable} /></View>
           </View>
         </Card>
+
+        {labsEmpty ? (
+          <Card style={{ backgroundColor: noLabs ? C.tile : TONES.pink.bg, borderColor: noLabs ? C.line : TONES.pink.border }}>
+            <View style={s.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: noLabs ? C.ink : TONES.pink.title, fontWeight: '800' }}>{noLabs ? 'No labs ordered at this visit' : 'No lab values yet'}</Text>
+                <Muted>{noLabs ? 'This visit will not be listed under Pending Lab Reports.' : 'Saved like this, the visit is listed under Pending Lab Reports on the dashboard until the report is entered or scanned.'}</Muted>
+              </View>
+              <Switch value={noLabs} onValueChange={setNoLabs} disabled={!editable} />
+            </View>
+            <Muted>Switch on only if you did not send blood at this visit.</Muted>
+          </Card>
+        ) : null}
 
         {LAB_GROUPS.map(g => (
           <Card key={g.title}>

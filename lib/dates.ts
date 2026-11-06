@@ -23,3 +23,8 @@ export function fmt(iso: string | null | undefined) {
   const [y, m, d] = iso.split('-');
   return `${d} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m) - 1]} ${y}`;
 }
+
+export function addDays(iso: string, n: number) {
+  const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}

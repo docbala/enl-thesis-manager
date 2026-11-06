@@ -11,7 +11,7 @@ import { C } from '../components/ui';
 let afterLogin: string | null = null;   // e.g. a photo link opened from the Google Sheet before signing in
 
 function Gate() {
-  const { session, loading } = useSession();
+  const { session, role, loading } = useSession();
   const segments = useSegments();
   const pathname = usePathname();
   if (loading) return <View style={{ flex: 1, justifyContent: 'center' }}><ActivityIndicator /></View>;
@@ -22,7 +22,7 @@ function Gate() {
   return (
     <View style={{ flex: 1 }}>
     <OfflineBanner />
-    <Stack key={session ? 'member' : 'guest'} screenOptions={{ headerStyle: { backgroundColor: C.primary }, headerTintColor: '#fff', contentStyle: { backgroundColor: C.bg },
+    <Stack key={role ? 'member' : session ? 'pending' : 'guest'} screenOptions={{ headerStyle: { backgroundColor: C.primary }, headerTintColor: '#fff', contentStyle: { backgroundColor: C.bg },
       headerRight: session ? undefined : () => <LoginPill /> }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen name="login" options={{ headerShown: false }} />
@@ -33,6 +33,7 @@ function Gate() {
       <Stack.Screen name="patient/trends" options={{ title: 'Trends' }} />
       <Stack.Screen name="photo/[id]" options={{ title: 'Photo' }} />
       <Stack.Screen name="photo/compare" options={{ title: 'Compare photos' }} />
+      <Stack.Screen name="master" options={{ title: 'Master list' }} />
       <Stack.Screen name="ask" options={{ title: 'Ask your data' }} />
       <Stack.Screen name="team" options={{ title: 'Team & settings' }} />
     </Stack>

@@ -4,9 +4,9 @@ import { router, useFocusEffect } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { supabase, tbl } from '../../lib/supabase';
 import type { Progress } from '../../lib/types';
-import { reminderText } from '../../lib/messages';
 import { fmt } from '../../lib/dates';
-import { C, Chip, ContactButtons, Muted, page, PersonRow, s } from '../../components/ui';
+import { C, Chip, Muted, page, PersonRow, s } from '../../components/ui';
+import { Avatar, useAvatars } from '../../components/Avatar';
 
 type Row = Progress & { uhid: string | null; contact_no: string | null; patient_status: string | null; enl_developed: boolean | null };
 
@@ -29,6 +29,7 @@ export default function Patients() {
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const avatars = useAvatars(rows.map(r => r.patient_id));
 
   // Search matches the study ID, name, UHID or phone only, never lab values.
   const shown = useMemo(() => {
@@ -59,14 +60,13 @@ export default function Patients() {
         }
         ListEmptyComponent={<Muted>No patients match.</Muted>}
         renderItem={({ item: r }) => (
-          <PersonRow name={r.patient_name} id={r.cr_no}
+          <PersonRow name={r.patient_name} id={r.cr_no} left={<Avatar name={r.patient_name} url={avatars[r.patient_id]} size={48} />}
             badge={r.mdt_status?.includes('Naive') ? 'Newly Diagnosed (Naive)' : null}
             sub={`${r.leprosy_spectrum ?? '-'} · ${r.followups_completed}/${r.followups_planned} follow-ups${r.next_due_date ? ` · next M${r.next_slot} ${fmt(r.next_due_date)}` : ''}`}
             onPress={() => router.push(`/patient/${r.patient_id}`)}
             right={
               <View style={{ alignItems: 'flex-end', gap: 6 }}>
-                <ContactButtons phone={r.contact_no} sms={false} message={reminderText(r.patient_name, r.next_due_date)} />
-                <View style={{ flexDirection: 'row', gap: 4 }}>
+                <View style={{ flexDirection: 'row', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                   {r.enl_developed ? <Chip text="ENL" tone="bad" /> : null}
                   {r.consecutive_missed >= 2 ? <Chip text={`${r.consecutive_missed} missed`} tone={r.ltfu_flag ? 'bad' : 'warn'} /> : null}
                   {r.patient_status && r.patient_status !== 'Active' ? <Chip text={r.patient_status} tone="warn" /> : null}
