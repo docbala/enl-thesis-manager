@@ -7,9 +7,9 @@ import { PatientPicker } from './PatientPicker';
 
 type Action = { key: 'enrol' | 'visit' | 'enl'; label: string; icon: keyof typeof MaterialCommunityIcons.glyphMap; color: string };
 const ACTIONS: Action[] = [
-  { key: 'enl', label: 'Log ENL reaction', icon: 'fire', color: '#C2410C' },
+  { key: 'enrol', label: 'Enrol new patient', icon: 'account-plus', color: '#1F7A4D' },     // top of the menu
   { key: 'visit', label: 'Log patient visit', icon: 'calendar-check', color: '#0F8FA3' },
-  { key: 'enrol', label: 'Enrol new patient', icon: 'account-plus', color: '#1F7A4D' },
+  { key: 'enl', label: 'Log ENL reaction', icon: 'fire', color: '#C2410C' },
 ];
 const native = Platform.OS !== 'web';
 
