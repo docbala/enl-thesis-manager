@@ -102,10 +102,13 @@ export default function Dashboard() {
     const due = progress.reduce((a, r) => a + r.followups_completed + r.followups_missed, 0);
     // Each confirmed patient has their own schedule: 12 months minus the MDT months already done at enrolment.
     const conf = new Set(patients.filter(p => p.cr_no.startsWith('HD-')).map(p => p.id));
-    const scheduled = progress.filter(r => conf.has(r.patient_id)).reduce((a, r) => a + r.followups_planned, 0);
-    const visitsDone = progress.filter(r => conf.has(r.patient_id)).reduce((a, r) => a + r.followups_completed, 0);
+    // Visits = the baseline plus each scheduled follow-up month
+    const mine = progress.filter(r => conf.has(r.patient_id));
+    const scheduled = mine.reduce((a, r) => a + r.followups_planned + 1, 0);
+    const baselinesDone = mine.filter(r => r.has_baseline).length;
+    const visitsDone = mine.reduce((a, r) => a + r.followups_completed, 0) + baselinesDone;
     return {
-      sat, saturday, awaiting, pendingRows, confirmed, done, due, visitsDone, scheduled, activeCount: active.length,
+      sat, saturday, awaiting, pendingRows, confirmed, done, due, visitsDone, scheduled, baselinesDone, activeCount: active.length,
       enl: patients.filter(p => p.enl_developed).length, byId, total: patients.length,
       naiveCount: patients.filter(p => (p.mdt_status ?? '').includes('Naive')).length,
     };
@@ -162,7 +165,7 @@ export default function Dashboard() {
           <ProgressCard title="Follow-up Adherence" color={C.teal} pct={view.due ? 100 * view.done / view.due : 0}
             caption={`${view.done} of ${view.due} follow-ups due so far were done`} />
           <ProgressCard title="Overall Target" color={C.amber} pct={view.scheduled ? 100 * view.visitsDone / view.scheduled : 0}
-            caption={`${view.visitsDone} of ${view.scheduled} scheduled follow-ups completed (sum of each patient's own schedule)`} />
+            caption={`${view.visitsDone} of ${view.scheduled} scheduled visits done (${view.baselinesDone} baseline + ${view.visitsDone - view.baselinesDone} follow-up). Each patient's own schedule: baseline + remaining MDT months.`} />
         </View>
       </Card>
 
