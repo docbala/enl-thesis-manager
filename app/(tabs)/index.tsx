@@ -7,13 +7,14 @@ import { GuestBanner } from '../../components/Guest';
 import { UpdateNotice } from '../../components/UpdateNotice';
 import { ExportSheet } from '../../components/ExportSheet';
 import { Fab } from '../../components/Fab';
+import { RemindButton } from '../../components/RemindButton';
 import { daysSince, noLabValues, LAB_KEYS } from '../../lib/study';
 import type { Patient, Progress, Slot } from '../../lib/types';
 import { ask, notify } from '../../lib/dialog';
 import { comingSaturday, reminderText } from '../../lib/messages';
 import { fmt, todayISO } from '../../lib/dates';
 import {
-  Btn, C, Card, Chip, ContactButtons, HeaderCard, Muted, PersonRow, ProgressCard, Screen, Section, StatTile, TONES,
+  Btn, C, Card, Chip, HeaderCard, Muted, PersonRow, ProgressCard, Screen, Section, StatTile, TONES,
 } from '../../components/ui';
 
 const TARGET_PATIENTS = 100;
@@ -173,11 +174,11 @@ export default function Dashboard() {
         render={x => {
           const p = view.byId.get(x.patient_id);
           return (
-            <PersonRow name={p?.patient_name ?? ''} id={x.cr_no} badge={reminded.has(x.patient_id) ? `✓ Reminded (${reminded.get(x.patient_id)})` : naive(p)}
+            <PersonRow name={p?.patient_name ?? ''} id={x.cr_no} badge={naive(p)}
               sub={`Month ${x.slot_month} due ${fmt(x.due_date)} · ${lastLine(x.patient_id)}`}
               onPress={() => router.push(`/patient/${x.patient_id}`)}
-              right={<ContactButtons vertical phone={p?.contact_no ?? null} message={reminderText(p?.patient_name ?? '', view.sat)}
-                onSent={ch => logReminder(x.patient_id, x.due_date, ch)} />} />
+              right={role ? <RemindButton phone={p?.contact_no ?? null} name={p?.patient_name ?? x.cr_no} message={reminderText(p?.patient_name ?? '', view.sat)}
+                sent={reminded.get(x.patient_id) ?? null} onSent={ch => logReminder(x.patient_id, x.due_date, ch)} /> : null} />
           );
         }} />
 
@@ -203,7 +204,8 @@ export default function Dashboard() {
               ? <Pressable onPress={() => router.push(r.route as any)} style={{ backgroundColor: TONES.pink.title, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 }}>
                   <Text style={{ color: '#fff', fontWeight: '800', textAlign: 'center' }}>Add{'\n'}report</Text>
                 </Pressable>
-              : r.kind === 'overdue' ? <ContactButtons phone={r.p.contact_no} sms={false} message={reminderText(r.p.patient_name, view.sat)} /> : null} />
+              : r.kind === 'overdue' && role ? <RemindButton phone={r.p.contact_no} name={r.p.patient_name} message={reminderText(r.p.patient_name, view.sat)}
+                  sent={reminded.get(r.p.id) ?? null} onSent={ch => logReminder(r.p.id, todayISO(), ch)} /> : null} />
         )} />
 
       <Section title="Steroid Response Flags" icon="💊" tone="pink" items={flags} keyOf={f => f.patient_id}
